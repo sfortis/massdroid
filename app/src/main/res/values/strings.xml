@@ -35,6 +35,12 @@
     <string name="settings_auto_resume_network_summary">Resume playback after network reconnection (WiFi/mobile switch)</string>
     <string name="settings_general">General</string>
 
+    <!-- Battery Optimization -->
+    <string name="battery_optimization_title">Disable Battery Optimization</string>
+    <string name="battery_optimization_message">For reliable background music playback, MassDroid needs to be excluded from battery optimization.\n\nWithout this, Android may stop playback when the screen is off.</string>
+    <string name="battery_optimization_button">Disable Optimization</string>
+    <string name="battery_optimization_skip">Skip</string>
+
     <!-- Messages -->
     <string name="loading">Loading…</string>
     <string name="error_loading">Error loading page</string>

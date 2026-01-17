@@ -14,11 +14,14 @@ import android.graphics.BitmapFactory
 import java.io.InputStream
 import java.net.HttpURLConnection
 import java.net.URL
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.os.PowerManager
+import android.provider.Settings
 import android.support.v4.media.MediaMetadataCompat
 import android.support.v4.media.session.MediaSessionCompat
 import android.support.v4.media.session.PlaybackStateCompat
@@ -344,6 +347,8 @@ class MainActivity : AppCompatActivity(),
             showSetupDialog()
             return
         }
+        // Check battery optimization on every app start
+        checkBatteryOptimization()
         val url = preferencesHelper.pwaUrl
         webView.loadUrl(url)
     }
@@ -372,10 +377,32 @@ class MainActivity : AppCompatActivity(),
                     }
                     else -> {
                         preferencesHelper.pwaUrl = url
+                        checkBatteryOptimization()
                         loadPwaUrl()
                     }
                 }
             }
+            .show()
+    }
+
+    private fun checkBatteryOptimization() {
+        val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
+        if (!powerManager.isIgnoringBatteryOptimizations(packageName)) {
+            showBatteryOptimizationDialog()
+        }
+    }
+
+    @SuppressLint("BatteryLife")
+    private fun showBatteryOptimizationDialog() {
+        android.app.AlertDialog.Builder(this)
+            .setTitle(R.string.battery_optimization_title)
+            .setMessage(R.string.battery_optimization_message)
+            .setPositiveButton(R.string.battery_optimization_button) { _, _ ->
+                val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
+                intent.data = Uri.parse("package:$packageName")
+                startActivity(intent)
+            }
+            .setNegativeButton(R.string.battery_optimization_skip, null)
             .show()
     }
 
