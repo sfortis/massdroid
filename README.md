@@ -1,72 +1,143 @@
-# MassDroid
+# MassDroid - Android Companion App for Music Assistant
 
-A native Android companion app for [Music Assistant](https://music-assistant.io/) that provides seamless integration with your phone's media controls.
+MassDroid is a native Android application that wraps the [Music Assistant](https://music-assistant.io/) web interface, providing seamless integration with Android's native media controls. Control your music from the lock screen, notification shade, Bluetooth headphones, car stereo, or Wear OS watch.
 
 ## Features
 
-- **Full Music Assistant UI** - Access the complete Music Assistant web interface
-- **Native Media Controls** - Control playback from:
-  - Lock screen
-  - Notification shade
-  - Bluetooth headphones/car stereo
-  - Wear OS watches
-- **Album Artwork** - See album art in notifications and on lock screen
-- **Progress Bar** - Track progress with seekable progress bar
-- **Auto-play on Bluetooth** - Automatically resume playback when connecting to Bluetooth audio
-- **Auto-resume on Network Change** - Seamless playback when switching between WiFi and mobile data
-- **Dark Mode** - Follows system theme
+- **Full Music Assistant UI** – Access the complete Music Assistant web interface in a native Android shell.
+- **Native Media Controls** – Control playback from lock screen, notification shade, Bluetooth devices, and Wear OS.
+- **Album Artwork** – Beautiful album art displayed in notifications and on lock screen.
+- **Seekable Progress Bar** – Track progress with native seek support.
+- **Auto-play on Bluetooth** – Automatically resume playback when connecting to Bluetooth audio devices.
+- **Auto-resume on Network Change** – Seamless playback continuation when switching between WiFi and mobile data.
+- **Dark Mode Support** – Follows system theme automatically.
+- **Configurable Server URL** – Connect to any Music Assistant server.
 
-## Screenshots
+## Architecture
 
-*Coming soon*
+MassDroid uses a JavaScript interceptor bridge to connect the Music Assistant PWA with Android's native MediaSession API:
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                           Android App                                │
+│  ┌───────────────────┐              ┌────────────────────────────┐  │
+│  │     WebView       │              │      MediaSession          │  │
+│  │  ┌─────────────┐  │              │  ┌──────────────────────┐  │  │
+│  │  │   Music     │  │   Bridge     │  │  - Lock screen       │  │  │
+│  │  │  Assistant  │◄─┼──────────────┼─►│  - Notification      │  │  │
+│  │  │    PWA      │  │              │  │  - Bluetooth/Car     │  │  │
+│  │  └─────────────┘  │              │  │  - Wear OS           │  │  │
+│  └───────────────────┘              │  └──────────────────────┘  │  │
+│           │                         └────────────────────────────┘  │
+│           │ JS Interceptor                       │                  │
+│           ▼                                      ▼                  │
+│  ┌───────────────────┐              ┌────────────────────────────┐  │
+│  │ navigator.        │              │      AudioService          │  │
+│  │ mediaSession      │─────────────►│  - Foreground service      │  │
+│  │ - metadata        │              │  - MediaStyle notification │  │
+│  │ - playbackState   │              │  - Album artwork loading   │  │
+│  │ - setPositionState│              └────────────────────────────┘  │
+│  └───────────────────┘                                              │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### How the Bridge Works
+
+1. **JavaScript Injection** – On page load, MassDroid injects a JavaScript interceptor that hooks into `navigator.mediaSession`.
+
+2. **Metadata Flow (PWA → Android)**:
+   ```
+   PWA updates navigator.mediaSession.metadata
+        ↓
+   JS Interceptor captures the change
+        ↓
+   AndroidMediaSession.updateMetadata() called via @JavascriptInterface
+        ↓
+   Native MediaSession + Notification updated
+   ```
+
+3. **Playback Control Flow (Android → PWA)**:
+   ```
+   User taps play on Bluetooth/notification
+        ↓
+   MediaSession callback triggered
+        ↓
+   executeMediaCommand() calls JavaScript
+        ↓
+   window.musicPlayer.play() invokes PWA handler
+   ```
+
+4. **Position/Seek Flow**:
+   ```
+   PWA calls navigator.mediaSession.setPositionState()
+        ↓
+   JS Interceptor captures position data
+        ↓
+   AndroidMediaSession.updatePositionState() updates progress bar
+
+   User seeks via notification
+        ↓
+   MediaSession.onSeekTo() callback
+        ↓
+   window.musicPlayer.seekTo(position) called
+   ```
 
 ## Installation
 
-### Option 1: Download APK
+### Option 1: Download APK (Recommended)
 
-Download the latest APK from the [Releases](https://github.com/sfortis/massdroid/releases) page.
+1. Download the latest APK from the [Releases](https://github.com/sfortis/massdroid/releases) page.
+2. Install on your Android device (enable "Install from unknown sources" if needed).
+3. On first launch, enter your Music Assistant server URL.
 
 ### Option 2: Build from Source
 
 ```bash
 git clone https://github.com/sfortis/massdroid.git
 cd massdroid
-./gradlew assembleDebug
+./gradlew assembleRelease
 ```
 
-The APK will be at `app/build/outputs/apk/debug/app-debug.apk`
-
-## Setup
-
-1. Install the APK on your Android device
-2. On first launch, enter your Music Assistant server URL (e.g., `https://your-server.com`)
-3. Log in to Music Assistant
-4. Start playing music!
+The APK will be at `app/build/outputs/apk/release/app-release.apk`
 
 ## Requirements
 
 - Android 8.0 (Oreo) or higher
 - A running [Music Assistant](https://music-assistant.io/) server
 
-## How It Works
-
-MassDroid loads the Music Assistant PWA (Progressive Web App) in a WebView and bridges the web player with Android's MediaSession API. This allows native Android media controls to work with Music Assistant's SendSpin audio streaming.
-
-## Settings
+## Configuration
 
 Access settings from the navigation drawer (hamburger menu):
 
-- **Music Assistant URL** - Change your server URL
-- **Keep Screen On** - Prevent screen timeout while app is open
-- **Auto-play on Bluetooth** - Resume playback when Bluetooth audio connects
-- **Auto-resume on Network Change** - Resume after WiFi/mobile switch
+| Setting | Description |
+|---------|-------------|
+| **Music Assistant URL** | Your server URL (e.g., `https://mass.example.com`) |
+| **Keep Screen On** | Prevent screen timeout while app is open |
+| **Auto-play on Bluetooth** | Resume playback when Bluetooth audio connects |
+| **Auto-resume on Network** | Resume after WiFi/mobile data switch |
 
 ## Permissions
 
-- **Internet** - Connect to your Music Assistant server
-- **Bluetooth** - Detect Bluetooth audio connections for auto-play
-- **Foreground Service** - Keep playing music when app is in background
-- **Notifications** - Show media notification with playback controls
+| Permission | Purpose |
+|------------|---------|
+| `INTERNET` | Connect to your Music Assistant server |
+| `BLUETOOTH_CONNECT` | Detect Bluetooth audio connections |
+| `FOREGROUND_SERVICE` | Keep playing music in background |
+| `POST_NOTIFICATIONS` | Show media notification with controls |
+
+## Troubleshooting
+
+**Media controls not responding?**
+- Ensure the Music Assistant web player is active
+- Check that notification permissions are granted
+
+**No audio after network change?**
+- Enable "Auto-resume on Network" in settings
+- The app will automatically reconnect when network is restored
+
+**Bluetooth auto-play not working?**
+- Enable "Auto-play on Bluetooth" in settings
+- Grant Bluetooth permissions when prompted
 
 ## Contributing
 
@@ -78,8 +149,8 @@ This project is licensed under the GNU General Public License v3.0 - see the [LI
 
 ## Acknowledgments
 
-- [Music Assistant](https://music-assistant.io/) - The amazing music server this app connects to
-- [SendSpin](https://github.com/music-assistant/sendspin) - The audio streaming protocol
+- [Music Assistant](https://music-assistant.io/) – The amazing self-hosted music server
+- [SendSpin](https://github.com/music-assistant/sendspin) – Audio streaming protocol used by Music Assistant
 
 ## Support
 
