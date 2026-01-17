@@ -1,4 +1,4 @@
-package net.asksakis.mass
+package net.asksakis.massdroid
 
 import android.Manifest
 import android.annotation.SuppressLint
@@ -41,7 +41,7 @@ import androidx.drawerlayout.widget.DrawerLayout
 import com.google.android.material.appbar.MaterialToolbar
 import com.google.android.material.navigation.NavigationView
 import com.google.android.material.progressindicator.LinearProgressIndicator
-import net.asksakis.mass.R
+import net.asksakis.massdroid.R
 
 class MainActivity : AppCompatActivity(),
     NavigationView.OnNavigationItemSelectedListener,
@@ -340,8 +340,43 @@ class MainActivity : AppCompatActivity(),
     }
 
     private fun loadPwaUrl() {
+        if (!preferencesHelper.isUrlConfigured) {
+            showSetupDialog()
+            return
+        }
         val url = preferencesHelper.pwaUrl
         webView.loadUrl(url)
+    }
+
+    private fun showSetupDialog() {
+        val builder = android.app.AlertDialog.Builder(this)
+        val input = android.widget.EditText(this)
+        input.hint = getString(R.string.setup_hint)
+        input.inputType = android.text.InputType.TYPE_TEXT_VARIATION_URI
+        input.setPadding(48, 32, 48, 32)
+
+        builder.setTitle(R.string.setup_title)
+            .setMessage(R.string.setup_message)
+            .setView(input)
+            .setCancelable(false)
+            .setPositiveButton(R.string.setup_button) { _, _ ->
+                val url = input.text.toString().trim()
+                when {
+                    url.isEmpty() -> {
+                        Toast.makeText(this, R.string.setup_error_empty, Toast.LENGTH_SHORT).show()
+                        showSetupDialog()
+                    }
+                    !url.startsWith("http://") && !url.startsWith("https://") -> {
+                        Toast.makeText(this, R.string.setup_error_invalid, Toast.LENGTH_SHORT).show()
+                        showSetupDialog()
+                    }
+                    else -> {
+                        preferencesHelper.pwaUrl = url
+                        loadPwaUrl()
+                    }
+                }
+            }
+            .show()
     }
 
     private fun applyKeepScreenOnSetting() {

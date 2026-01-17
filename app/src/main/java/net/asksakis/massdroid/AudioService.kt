@@ -1,4 +1,4 @@
-package net.asksakis.mass
+package net.asksakis.massdroid
 
 import android.app.Notification
 import android.app.NotificationChannel
@@ -43,9 +43,9 @@ class AudioService : Service() {
         private const val CHANNEL_ID = "music_assistant_playback"
 
         // Action constants for notification buttons
-        private const val ACTION_PLAY_PAUSE = "net.asksakis.mass.ACTION_PLAY_PAUSE"
-        private const val ACTION_PREVIOUS = "net.asksakis.mass.ACTION_PREVIOUS"
-        private const val ACTION_NEXT = "net.asksakis.mass.ACTION_NEXT"
+        private const val ACTION_PLAY_PAUSE = "net.asksakis.massdroid.ACTION_PLAY_PAUSE"
+        private const val ACTION_PREVIOUS = "net.asksakis.massdroid.ACTION_PREVIOUS"
+        private const val ACTION_NEXT = "net.asksakis.massdroid.ACTION_NEXT"
     }
 
     // Current metadata state

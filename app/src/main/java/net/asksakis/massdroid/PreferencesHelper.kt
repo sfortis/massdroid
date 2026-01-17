@@ -1,4 +1,4 @@
-package net.asksakis.mass
+package net.asksakis.massdroid
 
 import android.content.Context
 import android.content.SharedPreferences
@@ -13,12 +13,15 @@ class PreferencesHelper(context: Context) {
         private const val KEY_KEEP_SCREEN_ON = "keep_screen_on"
         private const val KEY_AUTO_PLAY_BLUETOOTH = "auto_play_bluetooth"
         private const val KEY_AUTO_RESUME_NETWORK = "auto_resume_network"
-        private const val DEFAULT_URL = "https://mass.asksakis.net"
+        private const val DEFAULT_URL = ""
     }
 
     var pwaUrl: String
         get() = sharedPreferences.getString(KEY_PWA_URL, DEFAULT_URL) ?: DEFAULT_URL
         set(value) = sharedPreferences.edit().putString(KEY_PWA_URL, value).apply()
+
+    val isUrlConfigured: Boolean
+        get() = pwaUrl.isNotBlank()
 
     var keepScreenOn: Boolean
         get() = sharedPreferences.getBoolean(KEY_KEEP_SCREEN_ON, false)

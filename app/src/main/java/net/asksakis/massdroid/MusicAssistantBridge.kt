@@ -1,4 +1,4 @@
-package net.asksakis.mass
+package net.asksakis.massdroid
 
 import android.os.Handler
 import android.os.Looper

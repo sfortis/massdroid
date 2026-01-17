@@ -1,4 +1,4 @@
-package net.asksakis.mass
+package net.asksakis.massdroid
 
 import android.os.Bundle
 import androidx.appcompat.app.AppCompatActivity

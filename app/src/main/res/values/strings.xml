@@ -15,9 +15,18 @@
 
     <!-- Settings -->
     <string name="settings">Settings</string>
-    <string name="settings_url_title">PWA URL</string>
-    <string name="settings_url_summary">Configure the URL to load in the app</string>
-    <string name="settings_url_default">https://mass.asksakis.net</string>
+    <string name="settings_url_title">Music Assistant URL</string>
+    <string name="settings_url_summary">Your Music Assistant server URL (e.g., https://your-server.com)</string>
+    <string name="settings_url_default"></string>
+    <string name="settings_url_hint">https://your-music-assistant-server.com</string>
+
+    <!-- First Run Setup -->
+    <string name="setup_title">Welcome to MassDroid</string>
+    <string name="setup_message">Enter your Music Assistant server URL to get started:</string>
+    <string name="setup_hint">https://your-server.com</string>
+    <string name="setup_button">Connect</string>
+    <string name="setup_error_empty">Please enter a URL</string>
+    <string name="setup_error_invalid">Please enter a valid URL starting with http:// or https://</string>
     <string name="settings_keep_screen_on_title">Keep Screen On</string>
     <string name="settings_keep_screen_on_summary">Prevent screen from turning off while using the app</string>
     <string name="settings_auto_play_bluetooth_title">Auto-play on Bluetooth</string>

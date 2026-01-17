@@ -1,167 +1,86 @@
-# Mass PWA - Native Android App
+# MassDroid
 
-A native Android application that loads the Mass PWA (https://mass.asksakis.net) in a WebView with Material Design 3 UI components.
+A native Android companion app for [Music Assistant](https://music-assistant.io/) that provides seamless integration with your phone's media controls.
 
 ## Features
 
-- **WebView Integration**: Loads the Mass PWA with full JavaScript and DOM storage support
-- **Material Design 3**: Modern UI with Material Design 3 components and theming
-- **Navigation Drawer**: Burger menu with navigation options
-- **URL Configuration**: Settings screen to configure the PWA URL
-- **Keep Screen On**: Toggle to prevent screen from turning off while using the app
-- **Adaptive Icon**: Material Design 3 compliant adaptive launcher icon
-- **Dark Mode Support**: Automatic dark theme support following system preferences
+- **Full Music Assistant UI** - Access the complete Music Assistant web interface
+- **Native Media Controls** - Control playback from:
+  - Lock screen
+  - Notification shade
+  - Bluetooth headphones/car stereo
+  - Wear OS watches
+- **Album Artwork** - See album art in notifications and on lock screen
+- **Progress Bar** - Track progress with seekable progress bar
+- **Auto-play on Bluetooth** - Automatically resume playback when connecting to Bluetooth audio
+- **Auto-resume on Network Change** - Seamless playback when switching between WiFi and mobile data
+- **Dark Mode** - Follows system theme
 
-## Technical Specifications
+## Screenshots
 
-- **Minimum API Level**: 26 (Android 8.0 Oreo)
-- **Target API Level**: 34 (Android 14)
-- **Language**: Kotlin
-- **Build System**: Gradle with Kotlin DSL
-- **UI Framework**: Material Design 3 (com.google.android.material:material:1.11.0)
+*Coming soon*
 
-## Project Structure
+## Installation
 
-```
-app/
-├── src/main/
-│   ├── java/net/asksakis/mass/
-│   │   ├── MainActivity.kt           # Main activity with WebView and navigation drawer
-│   │   ├── SettingsActivity.kt       # Settings screen
-│   │   └── PreferencesHelper.kt      # Shared preferences helper
-│   ├── res/
-│   │   ├── layout/
-│   │   │   ├── activity_main.xml     # Main activity layout
-│   │   │   ├── activity_settings.xml # Settings activity layout
-│   │   │   └── nav_header.xml        # Navigation drawer header
-│   │   ├── menu/
-│   │   │   └── drawer_menu.xml       # Navigation drawer menu items
-│   │   ├── values/
-│   │   │   ├── strings.xml           # String resources
-│   │   │   ├── colors.xml            # Material Design 3 color palette
-│   │   │   └── themes.xml            # Material Design 3 themes
-│   │   ├── values-night/
-│   │   │   └── themes.xml            # Dark theme
-│   │   ├── xml/
-│   │   │   └── preferences.xml       # Settings preferences
-│   │   └── drawable/                 # Vector icons
-│   └── AndroidManifest.xml
-└── build.gradle.kts
+### Option 1: Download APK
+
+Download the latest APK from the [Releases](https://github.com/sfortis/massdroid/releases) page.
+
+### Option 2: Build from Source
+
+```bash
+git clone https://github.com/sfortis/massdroid.git
+cd massdroid
+./gradlew assembleDebug
 ```
 
-## Building the App
+The APK will be at `app/build/outputs/apk/debug/app-debug.apk`
 
-### Prerequisites
+## Setup
 
-- Android Studio Arctic Fox or later
-- JDK 8 or later
-- Android SDK with API level 34
+1. Install the APK on your Android device
+2. On first launch, enter your Music Assistant server URL (e.g., `https://your-server.com`)
+3. Log in to Music Assistant
+4. Start playing music!
 
-### Build Instructions
+## Requirements
 
-1. **Clone or open the project in Android Studio**
+- Android 8.0 (Oreo) or higher
+- A running [Music Assistant](https://music-assistant.io/) server
 
-2. **Sync Gradle files**
-   - Android Studio should automatically prompt to sync
-   - Or go to File > Sync Project with Gradle Files
+## How It Works
 
-3. **Build the APK**
-   ```bash
-   ./gradlew assembleDebug
-   ```
-   The APK will be generated at: `app/build/outputs/apk/debug/app-debug.apk`
+MassDroid loads the Music Assistant PWA (Progressive Web App) in a WebView and bridges the web player with Android's MediaSession API. This allows native Android media controls to work with Music Assistant's SendSpin audio streaming.
 
-4. **Install on device**
-   ```bash
-   ./gradlew installDebug
-   ```
+## Settings
 
-   Or use adb directly:
-   ```bash
-   adb install app/build/outputs/apk/debug/app-debug.apk
-   ```
+Access settings from the navigation drawer (hamburger menu):
 
-### Building Release APK
+- **Music Assistant URL** - Change your server URL
+- **Keep Screen On** - Prevent screen timeout while app is open
+- **Auto-play on Bluetooth** - Resume playback when Bluetooth audio connects
+- **Auto-resume on Network Change** - Resume after WiFi/mobile switch
 
-1. **Build release APK**
-   ```bash
-   ./gradlew assembleRelease
-   ```
+## Permissions
 
-2. **Sign the APK** (if not configured in build.gradle)
-   - Use Android Studio's Build > Generate Signed Bundle / APK
-   - Or configure signing in `app/build.gradle.kts`
+- **Internet** - Connect to your Music Assistant server
+- **Bluetooth** - Detect Bluetooth audio connections for auto-play
+- **Foreground Service** - Keep playing music when app is in background
+- **Notifications** - Show media notification with playback controls
 
-## Configuration
+## Contributing
 
-### Default Settings
-
-- **Default URL**: https://mass.asksakis.net
-- **Keep Screen On**: Disabled by default
-
-### Changing Default URL
-
-Edit `app/src/main/res/values/strings.xml`:
-```xml
-<string name="settings_url_default">https://your-url-here.com</string>
-```
-
-### Permissions
-
-The app requires the following permissions (configured in AndroidManifest.xml):
-- `INTERNET` - Required for WebView to load web content
-- `ACCESS_NETWORK_STATE` - To check network connectivity
-- `WAKE_LOCK` - For the "Keep Screen On" feature
-
-## Features Implementation
-
-### WebView Configuration
-
-- JavaScript enabled
-- DOM storage enabled
-- Database enabled
-- Zoom controls enabled
-- Loading progress indicator
-- Back button navigation through WebView history
-
-### Navigation Drawer
-
-The navigation drawer includes:
-- **Home**: Navigate to the configured PWA URL
-- **Refresh**: Reload the current page
-- **Settings**: Open settings screen
-- **Keep Screen On**: Toggle to prevent screen from sleeping
-
-### Settings Screen
-
-Users can configure:
-- **PWA URL**: The URL to load in the WebView (persisted across app restarts)
-- **Keep Screen On**: Toggle to keep screen on while app is active
-
-Settings are saved using SharedPreferences and apply immediately.
-
-## Material Design 3
-
-The app follows Material Design 3 principles:
-
-- **Color System**: Dynamic color palette with primary, secondary, and tertiary colors
-- **Typography**: Material Design 3 typography scale
-- **Components**: Material Toolbar, NavigationView, LinearProgressIndicator
-- **Dark Theme**: Automatic dark theme support
-- **Adaptive Icon**: Material Design 3 compliant launcher icon
-
-## Development Notes
-
-- The app uses ViewBinding for type-safe view access
-- SharedPreferences are managed through a helper class for cleaner code
-- The WebView is configured to handle all navigation internally
-- Progress indicator shows loading state for better UX
-- The app responds to system dark mode settings automatically
+Contributions are welcome! Please feel free to submit a Pull Request.
 
 ## License
 
-[Add your license here]
+This project is licensed under the GNU General Public License v3.0 - see the [LICENSE](LICENSE) file for details.
 
-## Contact
+## Acknowledgments
 
-[Add your contact information here]
+- [Music Assistant](https://music-assistant.io/) - The amazing music server this app connects to
+- [SendSpin](https://github.com/music-assistant/sendspin) - The audio streaming protocol
+
+## Support
+
+If you encounter any issues, please [open an issue](https://github.com/sfortis/massdroid/issues) on GitHub.

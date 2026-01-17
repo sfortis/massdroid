@@ -4,26 +4,41 @@ plugins {
 }
 
 android {
-    namespace = "net.asksakis.mass"
+    namespace = "net.asksakis.massdroid"
     compileSdk = 34
 
+    signingConfigs {
+        create("release") {
+            storeFile = file("../massdroid.jks")
+            storePassword = "massdroid123"
+            keyAlias = "massdroid"
+            keyPassword = "massdroid123"
+        }
+    }
+
     defaultConfig {
-        applicationId = "net.asksakis.mass"
+        applicationId = "net.asksakis.massdroid"
         minSdk = 26
         targetSdk = 34
         versionCode = 1
-        versionName = "1.0"
+        versionName = "1.0.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
     buildTypes {
+        debug {
+            applicationIdSuffix = ".debug"
+            isDebuggable = true
+        }
         release {
-            isMinifyEnabled = false
+            isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            signingConfig = signingConfigs.getByName("release")
         }
     }
 

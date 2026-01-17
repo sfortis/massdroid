@@ -1,4 +1,4 @@
-package net.asksakis.mass
+package net.asksakis.massdroid
 
 import android.bluetooth.BluetoothA2dp
 import android.bluetooth.BluetoothAdapter
