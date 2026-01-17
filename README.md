@@ -44,6 +44,12 @@ You can access Music Assistant from any browser, but a native Android app offers
 - **Dark Mode Support** – Follows system theme automatically.
 - **Configurable Server URL** – Connect to any Music Assistant server.
 
+## Screenshots
+
+| Main UI | Sidebar | Settings |
+|:---:|:---:|:---:|
+| <img src="docs/screenshots/Screenshot_20260117_113848_MassDroid.png" width="250"> | <img src="docs/screenshots/Screenshot_20260117_113901_MassDroid.png" width="250"> | <img src="docs/screenshots/Screenshot_20260117_121931_MassDroid.png" width="250"> |
+
 ## Architecture
 
 MassDroid uses a JavaScript interceptor bridge to connect the Music Assistant PWA with Android's native MediaSession API:
