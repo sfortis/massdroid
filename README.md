@@ -2,6 +2,12 @@
   <img src="docs/massdroid_banner.png" alt="MassDroid" width="600">
 </p>
 
+<p align="center">
+  <a href="https://www.buymeacoffee.com/sfortis" target="_blank">
+    <img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me A Coffee" height="45">
+  </a>
+</p>
+
 # MassDroid - Android Companion App for Music Assistant
 
 MassDroid is a native Android application that wraps the [Music Assistant](https://music-assistant.io/) web interface, providing seamless integration with Android's native media controls. Control your music from the lock screen, notification shade, Bluetooth headphones, car stereo, or Wear OS watch.
