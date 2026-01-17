@@ -76,6 +76,9 @@ class MainActivity : AppCompatActivity(),
 
     // Network change monitoring
     private var networkMonitor: NetworkChangeMonitor? = null
+
+    // Track URL for detecting changes after settings
+    private var urlBeforeSettings: String = ""
     private var wasPlayingBeforeNetworkLoss = false
     private var savedPositionMs: Long = 0  // Position saved at moment of network loss
     private var savedDurationMs: Long = 0  // Duration saved at moment of network loss
@@ -299,6 +302,9 @@ class MainActivity : AppCompatActivity(),
             displayZoomControls = false
             loadWithOverviewMode = true
             useWideViewPort = true
+            // Custom User-Agent to bypass Google OAuth "disallowed_useragent" error
+            // when using Cloudflare Access with Google authentication
+            userAgentString = "Mozilla/5.0 (Linux; Android ${Build.VERSION.RELEASE}; ${Build.MODEL}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
         }
 
         // Add JavaScript interface for media metadata
@@ -308,8 +314,45 @@ class MainActivity : AppCompatActivity(),
         // WebViewClient for handling page navigation
         webView.webViewClient = object : WebViewClient() {
             override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
-                // Load all URLs in the WebView
-                return false
+                val url = request?.url?.toString() ?: return false
+
+                // Allow authentication pages in WebView (Cloudflare, Google OAuth, etc.)
+                if (isAuthPage(url)) {
+                    Log.d(TAG, "Allowing auth page in WebView: $url")
+                    return false // Load in WebView
+                }
+
+                // Get configured Music Assistant host
+                val configuredUrl = preferencesHelper.pwaUrl
+                val allowedHost = try {
+                    Uri.parse(configuredUrl).host?.lowercase() ?: ""
+                } catch (e: Exception) {
+                    ""
+                }
+
+                // Get requested URL host
+                val requestedHost = try {
+                    Uri.parse(url).host?.lowercase() ?: ""
+                } catch (e: Exception) {
+                    ""
+                }
+
+                // Allow if same host or subdomain
+                if (requestedHost == allowedHost ||
+                    requestedHost.endsWith(".$allowedHost") ||
+                    allowedHost.endsWith(".$requestedHost")) {
+                    return false // Load in WebView
+                }
+
+                // Open external URLs in browser
+                Log.d(TAG, "Opening external URL in browser: $url")
+                try {
+                    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
+                    startActivity(intent)
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to open external URL", e)
+                }
+                return true // Don't load in WebView
             }
 
             override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
@@ -325,6 +368,11 @@ class MainActivity : AppCompatActivity(),
                 Log.d(TAG, "Page finished loading: $url")
                 // MediaSession interceptor already injected in onPageStarted
                 // WebView's SendSpin handles audio, interceptor forwards metadata to Android
+
+                // Validate this is a Music Assistant server (skip for auth pages)
+                if (url != null && !isAuthPage(url)) {
+                    validateMusicAssistantServer()
+                }
             }
         }
 
@@ -349,8 +397,89 @@ class MainActivity : AppCompatActivity(),
         }
         // Check battery optimization on every app start
         checkBatteryOptimization()
+        // Reset validation when URL changes
+        validationAttempted = false
         val url = preferencesHelper.pwaUrl
         webView.loadUrl(url)
+    }
+
+    private var validationAttempted = false
+
+    private fun isAuthPage(url: String): Boolean {
+        // Common auth/login page patterns
+        val authPatterns = listOf(
+            "cloudflareaccess.com",
+            "access.cloudflare.com",
+            "/cdn-cgi/access/",
+            "accounts.google.com",
+            "login.microsoftonline.com",
+            "auth0.com",
+            "okta.com",
+            "/login",
+            "/signin",
+            "/oauth"
+        )
+        val lowercaseUrl = url.lowercase()
+        return authPatterns.any { lowercaseUrl.contains(it) }
+    }
+
+    private fun validateMusicAssistantServer() {
+        // Only validate once per session to avoid repeated warnings
+        if (validationAttempted) return
+        validationAttempted = true
+
+        val validationScript = """
+            (function() {
+                // Check multiple indicators that this is Music Assistant
+                var indicators = {
+                    title: document.title.toLowerCase().includes('music assistant'),
+                    appElement: !!document.querySelector('#app'),
+                    vueApp: !!(document.querySelector('#app') && document.querySelector('#app').__vue_app__),
+                    maApi: !!(document.querySelector('#app')?.__vue_app__?.config?.globalProperties?.${'$'}api),
+                    maPlayer: !!(document.querySelector('#app')?.__vue_app__?.config?.globalProperties?.${'$'}api?.players)
+                };
+
+                console.log('[Validation] Music Assistant indicators:', JSON.stringify(indicators));
+
+                // Valid if title matches OR if we have the Vue app with MA API
+                var isValid = indicators.title || (indicators.vueApp && indicators.maApi);
+
+                return JSON.stringify({ valid: isValid, indicators: indicators });
+            })();
+        """.trimIndent()
+
+        // Delay validation to allow Vue app to fully initialize
+        handler.postDelayed({
+            webView.evaluateJavascript(validationScript) { result ->
+                Log.d(TAG, "Validation result: $result")
+                try {
+                    // Parse the JSON result (it comes wrapped in quotes)
+                    val jsonStr = result.trim('"').replace("\\\"", "\"").replace("\\\\", "\\")
+                    val json = org.json.JSONObject(jsonStr)
+                    val isValid = json.getBoolean("valid")
+
+                    if (!isValid) {
+                        runOnUiThread {
+                            showInvalidServerWarning()
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.e(TAG, "Validation parse error", e)
+                    // Don't show warning on parse errors - could be auth redirect
+                }
+            }
+        }, 2000) // Wait 2 seconds for Vue to initialize
+    }
+
+    private fun showInvalidServerWarning() {
+        android.app.AlertDialog.Builder(this)
+            .setTitle("Warning")
+            .setMessage("This doesn't appear to be a Music Assistant server.\n\nThe app may not work correctly. Please check your server URL in Settings.")
+            .setPositiveButton("Open Settings") { _, _ ->
+                startActivity(Intent(this, SettingsActivity::class.java))
+            }
+            .setNegativeButton("Ignore", null)
+            .show()
     }
 
     private fun showSetupDialog() {
@@ -420,7 +549,7 @@ class MainActivity : AppCompatActivity(),
                 loadPwaUrl()
             }
             R.id.nav_refresh -> {
-                webView.reload()
+                loadPwaUrl()
             }
             R.id.nav_settings -> {
                 startActivity(Intent(this, SettingsActivity::class.java))
@@ -969,12 +1098,28 @@ class MainActivity : AppCompatActivity(),
         preferencesHelper.registerOnChangeListener(this)
         // Update keep screen on state in case it changed in settings
         applyKeepScreenOnSetting()
+
+        // Reload if URL changed in settings
+        if (urlBeforeSettings.isNotEmpty()) {
+            val newUrl = preferencesHelper.pwaUrl
+            Log.d(TAG, "Checking URL change: before=$urlBeforeSettings, after=$newUrl")
+            if (urlBeforeSettings != newUrl) {
+                Log.i(TAG, "URL changed in settings, reloading: $urlBeforeSettings -> $newUrl")
+                urlBeforeSettings = "" // Reset before loading to avoid loop
+                loadPwaUrl()
+            } else {
+                urlBeforeSettings = "" // Reset even if not changed
+            }
+        }
     }
 
     override fun onPause() {
         super.onPause()
         webView.onPause()
         preferencesHelper.unregisterOnChangeListener(this)
+        // Track URL to detect changes when resuming
+        urlBeforeSettings = preferencesHelper.pwaUrl
+        Log.d(TAG, "onPause - tracking URL: $urlBeforeSettings")
     }
 
     /**
