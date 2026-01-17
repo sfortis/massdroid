@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8"?>
+<PreferenceScreen xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto">
+
+    <PreferenceCategory
+        android:title="@string/settings_general">
+
+        <EditTextPreference
+            android:defaultValue="@string/settings_url_default"
+            android:key="pwa_url"
+            android:summary="@string/settings_url_summary"
+            android:title="@string/settings_url_title"
+            app:iconSpaceReserved="false"
+            app:useSimpleSummaryProvider="true" />
+
+        <SwitchPreferenceCompat
+            android:defaultValue="false"
+            android:key="keep_screen_on"
+            android:summary="@string/settings_keep_screen_on_summary"
+            android:title="@string/settings_keep_screen_on_title"
+            app:iconSpaceReserved="false" />
+
+        <SwitchPreferenceCompat
+            android:defaultValue="true"
+            android:key="auto_play_bluetooth"
+            android:summary="@string/settings_auto_play_bluetooth_summary"
+            android:title="@string/settings_auto_play_bluetooth_title"
+            app:iconSpaceReserved="false" />
+
+        <SwitchPreferenceCompat
+            android:defaultValue="true"
+            android:key="auto_resume_network"
+            android:summary="@string/settings_auto_resume_network_summary"
+            android:title="@string/settings_auto_resume_network_title"
+            app:iconSpaceReserved="false" />
+
+    </PreferenceCategory>
+
+</PreferenceScreen>

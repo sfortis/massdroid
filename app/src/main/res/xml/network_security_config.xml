@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!-- Allow cleartext (ws://) for SendSpin protocol on port 8927 -->
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="true">mass.asksakis.net</domain>
+        <domain includeSubdomains="true">sendspin.local</domain>
+        <!-- Allow local network for mDNS discovery -->
+        <domain includeSubdomains="true">local</domain>
+    </domain-config>
+</network-security-config>
