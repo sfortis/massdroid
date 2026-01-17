@@ -2,6 +2,25 @@
 
 MassDroid is a native Android application that wraps the [Music Assistant](https://music-assistant.io/) web interface, providing seamless integration with Android's native media controls. Control your music from the lock screen, notification shade, Bluetooth headphones, car stereo, or Wear OS watch.
 
+## Why MassDroid instead of Browser?
+
+You can access Music Assistant from any browser, but a native Android app offers significant advantages:
+
+| Feature | Browser | MassDroid |
+|---------|---------|-----------|
+| **Lock screen controls** | No | Yes |
+| **Notification with controls** | Limited | Full (play/pause/next/prev/seek) |
+| **Bluetooth/Car controls** | No | Yes |
+| **Wear OS control** | No | Yes |
+| **Album art on lock screen** | No | Yes |
+| **Background playback** | Unreliable (browser may be killed) | Reliable (foreground service) |
+| **Auto-play on Bluetooth connect** | No | Yes |
+| **Auto-resume after network change** | No | Yes |
+| **Dedicated app icon** | No (bookmark only) | Yes |
+| **Clean full-screen UI** | No (browser chrome visible) | Yes |
+
+**In short:** MassDroid makes Music Assistant feel like a native Android music app, with all the system integrations you expect.
+
 ## Features
 
 - **Full Music Assistant UI** – Access the complete Music Assistant web interface in a native Android shell.
