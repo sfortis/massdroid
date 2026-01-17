@@ -38,29 +38,9 @@ You can access Music Assistant from any browser, but a native Android app offers
 
 MassDroid uses a JavaScript interceptor bridge to connect the Music Assistant PWA with Android's native MediaSession API:
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                           Android App                                │
-│  ┌───────────────────┐              ┌────────────────────────────┐  │
-│  │     WebView       │              │      MediaSession          │  │
-│  │  ┌─────────────┐  │              │  ┌──────────────────────┐  │  │
-│  │  │   Music     │  │   Bridge     │  │  - Lock screen       │  │  │
-│  │  │  Assistant  │◄─┼──────────────┼─►│  - Notification      │  │  │
-│  │  │    PWA      │  │              │  │  - Bluetooth/Car     │  │  │
-│  │  └─────────────┘  │              │  │  - Wear OS           │  │  │
-│  └───────────────────┘              │  └──────────────────────┘  │  │
-│           │                         └────────────────────────────┘  │
-│           │ JS Interceptor                       │                  │
-│           ▼                                      ▼                  │
-│  ┌───────────────────┐              ┌────────────────────────────┐  │
-│  │ navigator.        │              │      AudioService          │  │
-│  │ mediaSession      │─────────────►│  - Foreground service      │  │
-│  │ - metadata        │              │  - MediaStyle notification │  │
-│  │ - playbackState   │              │  - Album artwork loading   │  │
-│  │ - setPositionState│              └────────────────────────────┘  │
-│  └───────────────────┘                                              │
-└─────────────────────────────────────────────────────────────────────┘
-```
+<p align="center">
+  <img src="docs/architecture.svg" alt="MassDroid Architecture" width="700">
+</p>
 
 ### How the Bridge Works
 

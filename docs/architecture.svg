@@ -1,0 +1,77 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 500">
+  <defs>
+    <style>
+      .box { fill: #1a1a2e; stroke: #4a9eff; stroke-width: 2; rx: 8; }
+      .box-inner { fill: #16213e; stroke: #4a9eff; stroke-width: 1.5; rx: 6; }
+      .box-deep { fill: #0f3460; stroke: #4a9eff; stroke-width: 1; rx: 4; }
+      .text-title { fill: #ffffff; font-family: Arial, sans-serif; font-size: 16px; font-weight: bold; }
+      .text-label { fill: #e0e0e0; font-family: Arial, sans-serif; font-size: 13px; font-weight: bold; }
+      .text-item { fill: #b0b0b0; font-family: Arial, sans-serif; font-size: 11px; }
+      .text-small { fill: #8a8a8a; font-family: Arial, sans-serif; font-size: 10px; }
+      .arrow { stroke: #4a9eff; stroke-width: 2; fill: none; marker-end: url(#arrowhead); }
+      .arrow-both { stroke: #4a9eff; stroke-width: 2; fill: none; marker-start: url(#arrowhead-left); marker-end: url(#arrowhead); }
+      .bridge-text { fill: #4a9eff; font-family: Arial, sans-serif; font-size: 12px; font-weight: bold; }
+    </style>
+    <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#4a9eff" />
+    </marker>
+    <marker id="arrowhead-left" markerWidth="10" markerHeight="7" refX="1" refY="3.5" orient="auto-start-reverse">
+      <polygon points="10 0, 0 3.5, 10 7" fill="#4a9eff" />
+    </marker>
+  </defs>
+
+  <!-- Main container -->
+  <rect class="box" x="20" y="20" width="760" height="460" />
+  <text class="text-title" x="400" y="50" text-anchor="middle">Android App</text>
+
+  <!-- WebView box -->
+  <rect class="box-inner" x="40" y="70" width="200" height="170" />
+  <text class="text-label" x="140" y="95" text-anchor="middle">WebView</text>
+
+  <!-- Music Assistant PWA inner box -->
+  <rect class="box-deep" x="60" y="110" width="160" height="80" />
+  <text class="text-item" x="140" y="135" text-anchor="middle">Music</text>
+  <text class="text-item" x="140" y="150" text-anchor="middle">Assistant</text>
+  <text class="text-item" x="140" y="165" text-anchor="middle">PWA</text>
+
+  <!-- MediaSession box -->
+  <rect class="box-inner" x="450" y="70" width="310" height="170" />
+  <text class="text-label" x="605" y="95" text-anchor="middle">MediaSession</text>
+
+  <!-- MediaSession items inner box -->
+  <rect class="box-deep" x="470" y="110" width="270" height="110" />
+  <text class="text-item" x="490" y="135">- Lock screen</text>
+  <text class="text-item" x="490" y="155">- Notification</text>
+  <text class="text-item" x="490" y="175">- Bluetooth / Car</text>
+  <text class="text-item" x="490" y="195">- Wear OS</text>
+
+  <!-- Bridge arrow between WebView and MediaSession -->
+  <line class="arrow-both" x1="245" y1="150" x2="445" y2="150" />
+  <text class="bridge-text" x="345" y="140" text-anchor="middle">Bridge</text>
+
+  <!-- navigator.mediaSession box -->
+  <rect class="box-inner" x="40" y="300" width="200" height="150" />
+  <text class="text-label" x="140" y="325" text-anchor="middle">navigator.</text>
+  <text class="text-label" x="140" y="342" text-anchor="middle">mediaSession</text>
+  <text class="text-item" x="60" y="370">- metadata</text>
+  <text class="text-item" x="60" y="390">- playbackState</text>
+  <text class="text-item" x="60" y="410">- setPositionState</text>
+
+  <!-- AudioService box -->
+  <rect class="box-inner" x="450" y="300" width="310" height="150" />
+  <text class="text-label" x="605" y="325" text-anchor="middle">AudioService</text>
+  <text class="text-item" x="470" y="360">- Foreground service</text>
+  <text class="text-item" x="470" y="385">- MediaStyle notification</text>
+  <text class="text-item" x="470" y="410">- Album artwork loading</text>
+
+  <!-- Vertical arrow from WebView to navigator.mediaSession -->
+  <line class="arrow" x1="140" y1="245" x2="140" y2="295" />
+  <text class="text-small" x="150" y="275">JS Interceptor</text>
+
+  <!-- Vertical arrow from MediaSession to AudioService -->
+  <line class="arrow" x1="605" y1="245" x2="605" y2="295" />
+
+  <!-- Horizontal arrow from navigator.mediaSession to AudioService -->
+  <line class="arrow" x1="245" y1="375" x2="445" y2="375" />
+
+</svg>
