@@ -3,7 +3,20 @@
     xmlns:app="http://schemas.android.com/apk/res-auto">
 
     <PreferenceCategory
-        android:title="@string/settings_general">
+        android:title="@string/settings_appearance"
+        app:iconSpaceReserved="false">
+
+        <net.asksakis.massdroid.ColorPickerPreference
+            android:key="color_accent"
+            android:title="@string/settings_color_accent_title"
+            android:defaultValue="purple"
+            app:iconSpaceReserved="false" />
+
+    </PreferenceCategory>
+
+    <PreferenceCategory
+        android:title="@string/settings_general"
+        app:iconSpaceReserved="false">
 
         <EditTextPreference
             android:defaultValue="@string/settings_url_default"

@@ -48,4 +48,60 @@
     </style>
 
     <style name="Theme.MassPWA" parent="Base.Theme.MassPWA" />
+
+    <!-- Blue Theme -->
+    <style name="Theme.MassPWA.Blue" parent="Base.Theme.MassPWA">
+        <item name="colorPrimary">@color/blue_light_primary</item>
+        <item name="colorOnPrimary">@color/blue_light_onPrimary</item>
+        <item name="colorPrimaryContainer">@color/blue_light_primaryContainer</item>
+        <item name="colorOnPrimaryContainer">@color/blue_light_onPrimaryContainer</item>
+    </style>
+
+    <!-- Green Theme -->
+    <style name="Theme.MassPWA.Green" parent="Base.Theme.MassPWA">
+        <item name="colorPrimary">@color/green_light_primary</item>
+        <item name="colorOnPrimary">@color/green_light_onPrimary</item>
+        <item name="colorPrimaryContainer">@color/green_light_primaryContainer</item>
+        <item name="colorOnPrimaryContainer">@color/green_light_onPrimaryContainer</item>
+    </style>
+
+    <!-- Red Theme -->
+    <style name="Theme.MassPWA.Red" parent="Base.Theme.MassPWA">
+        <item name="colorPrimary">@color/red_light_primary</item>
+        <item name="colorOnPrimary">@color/red_light_onPrimary</item>
+        <item name="colorPrimaryContainer">@color/red_light_primaryContainer</item>
+        <item name="colorOnPrimaryContainer">@color/red_light_onPrimaryContainer</item>
+    </style>
+
+    <!-- Orange Theme -->
+    <style name="Theme.MassPWA.Orange" parent="Base.Theme.MassPWA">
+        <item name="colorPrimary">@color/orange_light_primary</item>
+        <item name="colorOnPrimary">@color/orange_light_onPrimary</item>
+        <item name="colorPrimaryContainer">@color/orange_light_primaryContainer</item>
+        <item name="colorOnPrimaryContainer">@color/orange_light_onPrimaryContainer</item>
+    </style>
+
+    <!-- Teal Theme -->
+    <style name="Theme.MassPWA.Teal" parent="Base.Theme.MassPWA">
+        <item name="colorPrimary">@color/teal_light_primary</item>
+        <item name="colorOnPrimary">@color/teal_light_onPrimary</item>
+        <item name="colorPrimaryContainer">@color/teal_light_primaryContainer</item>
+        <item name="colorOnPrimaryContainer">@color/teal_light_onPrimaryContainer</item>
+    </style>
+
+    <!-- Indigo Theme -->
+    <style name="Theme.MassPWA.Indigo" parent="Base.Theme.MassPWA">
+        <item name="colorPrimary">@color/indigo_light_primary</item>
+        <item name="colorOnPrimary">@color/indigo_light_onPrimary</item>
+        <item name="colorPrimaryContainer">@color/indigo_light_primaryContainer</item>
+        <item name="colorOnPrimaryContainer">@color/indigo_light_onPrimaryContainer</item>
+    </style>
+
+    <!-- Pink Theme -->
+    <style name="Theme.MassPWA.Pink" parent="Base.Theme.MassPWA">
+        <item name="colorPrimary">@color/pink_light_primary</item>
+        <item name="colorOnPrimary">@color/pink_light_onPrimary</item>
+        <item name="colorPrimaryContainer">@color/pink_light_primaryContainer</item>
+        <item name="colorOnPrimaryContainer">@color/pink_light_onPrimaryContainer</item>
+    </style>
 </resources>

@@ -89,3 +89,44 @@ The app uses the **WebView's built-in SendSpin client** for audio playback. The 
 - **Min SDK**: 26 (Android 8.0)
 - **Target SDK**: 34 (Android 14)
 - **Architecture**: Single Activity with WebView
+
+## Release Workflow
+
+**Always test locally before pushing!**
+
+### 1. Build & Test
+
+```bash
+# Build debug APK
+./gradlew assembleDebug
+
+# Install on device
+adb install -r app/build/outputs/apk/debug/app-debug.apk
+
+# Test the changes on device
+```
+
+### 2. Commit & Push
+
+```bash
+# After testing is successful
+git add -A && git commit -m "Brief description"
+git push origin master
+```
+
+### 3. Create Release
+
+```bash
+# Build release APK
+bash gradlew assembleRelease
+
+# Create GitHub release
+gh release create v1.x.x app/build/outputs/apk/release/app-release.apk \
+  --title "MassDroid v1.x.x" \
+  --notes "- Change 1
+- Change 2"
+```
+
+### Notes
+- Keep commit messages brief
+- Test on device before pushing

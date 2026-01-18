@@ -46,4 +46,60 @@
         <item name="android:statusBarColor">?attr/colorPrimaryContainer</item>
         <item name="android:windowLightStatusBar">false</item>
     </style>
+
+    <!-- Blue Theme Dark -->
+    <style name="Theme.MassPWA.Blue" parent="Base.Theme.MassPWA">
+        <item name="colorPrimary">@color/blue_dark_primary</item>
+        <item name="colorOnPrimary">@color/blue_dark_onPrimary</item>
+        <item name="colorPrimaryContainer">@color/blue_dark_primaryContainer</item>
+        <item name="colorOnPrimaryContainer">@color/blue_dark_onPrimaryContainer</item>
+    </style>
+
+    <!-- Green Theme Dark -->
+    <style name="Theme.MassPWA.Green" parent="Base.Theme.MassPWA">
+        <item name="colorPrimary">@color/green_dark_primary</item>
+        <item name="colorOnPrimary">@color/green_dark_onPrimary</item>
+        <item name="colorPrimaryContainer">@color/green_dark_primaryContainer</item>
+        <item name="colorOnPrimaryContainer">@color/green_dark_onPrimaryContainer</item>
+    </style>
+
+    <!-- Red Theme Dark -->
+    <style name="Theme.MassPWA.Red" parent="Base.Theme.MassPWA">
+        <item name="colorPrimary">@color/red_dark_primary</item>
+        <item name="colorOnPrimary">@color/red_dark_onPrimary</item>
+        <item name="colorPrimaryContainer">@color/red_dark_primaryContainer</item>
+        <item name="colorOnPrimaryContainer">@color/red_dark_onPrimaryContainer</item>
+    </style>
+
+    <!-- Orange Theme Dark -->
+    <style name="Theme.MassPWA.Orange" parent="Base.Theme.MassPWA">
+        <item name="colorPrimary">@color/orange_dark_primary</item>
+        <item name="colorOnPrimary">@color/orange_dark_onPrimary</item>
+        <item name="colorPrimaryContainer">@color/orange_dark_primaryContainer</item>
+        <item name="colorOnPrimaryContainer">@color/orange_dark_onPrimaryContainer</item>
+    </style>
+
+    <!-- Teal Theme Dark -->
+    <style name="Theme.MassPWA.Teal" parent="Base.Theme.MassPWA">
+        <item name="colorPrimary">@color/teal_dark_primary</item>
+        <item name="colorOnPrimary">@color/teal_dark_onPrimary</item>
+        <item name="colorPrimaryContainer">@color/teal_dark_primaryContainer</item>
+        <item name="colorOnPrimaryContainer">@color/teal_dark_onPrimaryContainer</item>
+    </style>
+
+    <!-- Indigo Theme Dark -->
+    <style name="Theme.MassPWA.Indigo" parent="Base.Theme.MassPWA">
+        <item name="colorPrimary">@color/indigo_dark_primary</item>
+        <item name="colorOnPrimary">@color/indigo_dark_onPrimary</item>
+        <item name="colorPrimaryContainer">@color/indigo_dark_primaryContainer</item>
+        <item name="colorOnPrimaryContainer">@color/indigo_dark_onPrimaryContainer</item>
+    </style>
+
+    <!-- Pink Theme Dark -->
+    <style name="Theme.MassPWA.Pink" parent="Base.Theme.MassPWA">
+        <item name="colorPrimary">@color/pink_dark_primary</item>
+        <item name="colorOnPrimary">@color/pink_dark_onPrimary</item>
+        <item name="colorPrimaryContainer">@color/pink_dark_primaryContainer</item>
+        <item name="colorOnPrimaryContainer">@color/pink_dark_onPrimaryContainer</item>
+    </style>
 </resources>

@@ -60,4 +60,74 @@
     <!-- Additional Colors -->
     <color name="black">#FF000000</color>
     <color name="white">#FFFFFFFF</color>
+
+    <!-- Blue Accent -->
+    <color name="blue_light_primary">#1976D2</color>
+    <color name="blue_light_onPrimary">#FFFFFF</color>
+    <color name="blue_light_primaryContainer">#D1E4FF</color>
+    <color name="blue_light_onPrimaryContainer">#001D36</color>
+    <color name="blue_dark_primary">#A8C8FF</color>
+    <color name="blue_dark_onPrimary">#003060</color>
+    <color name="blue_dark_primaryContainer">#004788</color>
+    <color name="blue_dark_onPrimaryContainer">#D1E4FF</color>
+
+    <!-- Green Accent -->
+    <color name="green_light_primary">#388E3C</color>
+    <color name="green_light_onPrimary">#FFFFFF</color>
+    <color name="green_light_primaryContainer">#B6F2AF</color>
+    <color name="green_light_onPrimaryContainer">#002204</color>
+    <color name="green_dark_primary">#9BD88D</color>
+    <color name="green_dark_onPrimary">#00390A</color>
+    <color name="green_dark_primaryContainer">#005315</color>
+    <color name="green_dark_onPrimaryContainer">#B6F2AF</color>
+
+    <!-- Red Accent -->
+    <color name="red_light_primary">#D32F2F</color>
+    <color name="red_light_onPrimary">#FFFFFF</color>
+    <color name="red_light_primaryContainer">#FFDAD6</color>
+    <color name="red_light_onPrimaryContainer">#410002</color>
+    <color name="red_dark_primary">#FFB4AB</color>
+    <color name="red_dark_onPrimary">#690005</color>
+    <color name="red_dark_primaryContainer">#93000A</color>
+    <color name="red_dark_onPrimaryContainer">#FFDAD6</color>
+
+    <!-- Orange Accent -->
+    <color name="orange_light_primary">#F57C00</color>
+    <color name="orange_light_onPrimary">#FFFFFF</color>
+    <color name="orange_light_primaryContainer">#FFDCBE</color>
+    <color name="orange_light_onPrimaryContainer">#2C1600</color>
+    <color name="orange_dark_primary">#FFB86B</color>
+    <color name="orange_dark_onPrimary">#4A2800</color>
+    <color name="orange_dark_primaryContainer">#6A3C00</color>
+    <color name="orange_dark_onPrimaryContainer">#FFDCBE</color>
+
+    <!-- Teal Accent -->
+    <color name="teal_light_primary">#00796B</color>
+    <color name="teal_light_onPrimary">#FFFFFF</color>
+    <color name="teal_light_primaryContainer">#A0F0E4</color>
+    <color name="teal_light_onPrimaryContainer">#00201C</color>
+    <color name="teal_dark_primary">#4DDBC9</color>
+    <color name="teal_dark_onPrimary">#003731</color>
+    <color name="teal_dark_primaryContainer">#005048</color>
+    <color name="teal_dark_onPrimaryContainer">#A0F0E4</color>
+
+    <!-- Indigo Accent -->
+    <color name="indigo_light_primary">#303F9F</color>
+    <color name="indigo_light_onPrimary">#FFFFFF</color>
+    <color name="indigo_light_primaryContainer">#DEE0FF</color>
+    <color name="indigo_light_onPrimaryContainer">#00105C</color>
+    <color name="indigo_dark_primary">#BAC3FF</color>
+    <color name="indigo_dark_onPrimary">#0A2178</color>
+    <color name="indigo_dark_primaryContainer">#273990</color>
+    <color name="indigo_dark_onPrimaryContainer">#DEE0FF</color>
+
+    <!-- Pink Accent -->
+    <color name="pink_light_primary">#C2185B</color>
+    <color name="pink_light_onPrimary">#FFFFFF</color>
+    <color name="pink_light_primaryContainer">#FFD9E2</color>
+    <color name="pink_light_onPrimaryContainer">#3E001D</color>
+    <color name="pink_dark_primary">#FFB1C8</color>
+    <color name="pink_dark_onPrimary">#5E1133</color>
+    <color name="pink_dark_primaryContainer">#7B2949</color>
+    <color name="pink_dark_onPrimaryContainer">#FFD9E2</color>
 </resources>

@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string-array name="color_accent_entries">
+        <item>Purple (Default)</item>
+        <item>Blue</item>
+        <item>Green</item>
+        <item>Red</item>
+        <item>Orange</item>
+        <item>Teal</item>
+    </string-array>
+
+    <string-array name="color_accent_values">
+        <item>purple</item>
+        <item>blue</item>
+        <item>green</item>
+        <item>red</item>
+        <item>orange</item>
+        <item>teal</item>
+    </string-array>
+</resources>

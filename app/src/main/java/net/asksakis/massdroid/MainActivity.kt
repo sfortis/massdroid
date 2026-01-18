@@ -30,10 +30,15 @@ import android.webkit.JavascriptInterface
 import android.view.MenuItem
 import android.view.View
 import android.view.WindowManager
+import android.security.KeyChain
+import android.security.KeyChainAliasCallback
+import android.webkit.ClientCertRequest
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import java.security.PrivateKey
+import java.security.cert.X509Certificate
 import android.widget.Toast
 import androidx.appcompat.app.ActionBarDrawerToggle
 import androidx.appcompat.app.AppCompatActivity
@@ -77,8 +82,12 @@ class MainActivity : AppCompatActivity(),
     // Network change monitoring
     private var networkMonitor: NetworkChangeMonitor? = null
 
+    // Client certificate alias for mTLS
+    private var clientCertAlias: String? = null
+
     // Track URL for detecting changes after settings
     private var urlBeforeSettings: String = ""
+    private var colorBeforePause: String = ""
     private var wasPlayingBeforeNetworkLoss = false
     private var savedPositionMs: Long = 0  // Position saved at moment of network loss
     private var savedDurationMs: Long = 0  // Duration saved at moment of network loss
@@ -135,6 +144,7 @@ class MainActivity : AppCompatActivity(),
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        ThemeHelper.applyTheme(this)
         setContentView(R.layout.activity_main)
 
         // Initialize preferences helper
@@ -289,6 +299,30 @@ class MainActivity : AppCompatActivity(),
 
         navigationView.setNavigationItemSelectedListener(this)
 
+        // Update header with current URL
+        updateDrawerHeader()
+    }
+
+    private fun updateDrawerHeader() {
+        val headerView = navigationView.getHeaderView(0)
+        val subtitleView = headerView?.findViewById<android.widget.TextView>(R.id.nav_header_subtitle)
+        subtitleView?.text = preferencesHelper.pwaUrl.ifEmpty { "Not configured" }
+    }
+
+    override fun onNavigationItemSelected(item: MenuItem): Boolean {
+        when (item.itemId) {
+            R.id.nav_home -> {
+                loadPwaUrl()
+            }
+            R.id.nav_refresh -> {
+                loadPwaUrl()
+            }
+            R.id.nav_settings -> {
+                startActivity(Intent(this, SettingsActivity::class.java))
+            }
+        }
+        drawerLayout.closeDrawer(GravityCompat.START)
+        return true
     }
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -374,6 +408,36 @@ class MainActivity : AppCompatActivity(),
                     validateMusicAssistantServer()
                 }
             }
+
+            override fun onReceivedClientCertRequest(view: WebView?, request: ClientCertRequest?) {
+                Log.i(TAG, "Client certificate requested by ${request?.host}")
+
+                // If we have a saved alias, use it
+                if (clientCertAlias != null) {
+                    provideClientCertificate(request, clientCertAlias!!)
+                    return
+                }
+
+                // Prompt user to select certificate
+                KeyChain.choosePrivateKeyAlias(
+                    this@MainActivity,
+                    { alias ->
+                        if (alias != null) {
+                            Log.i(TAG, "User selected certificate: $alias")
+                            clientCertAlias = alias
+                            provideClientCertificate(request, alias)
+                        } else {
+                            Log.w(TAG, "No certificate selected")
+                            request?.cancel()
+                        }
+                    },
+                    request?.keyTypes,
+                    request?.principals,
+                    request?.host,
+                    request?.port ?: -1,
+                    null
+                )
+            }
         }
 
         // WebChromeClient for handling progress
@@ -388,6 +452,26 @@ class MainActivity : AppCompatActivity(),
                 }
             }
         }
+    }
+
+    private fun provideClientCertificate(request: ClientCertRequest?, alias: String) {
+        Thread {
+            try {
+                val privateKey: PrivateKey? = KeyChain.getPrivateKey(this, alias)
+                val certificateChain: Array<X509Certificate>? = KeyChain.getCertificateChain(this, alias)
+
+                if (privateKey != null && certificateChain != null) {
+                    Log.i(TAG, "Providing client certificate: $alias")
+                    request?.proceed(privateKey, certificateChain)
+                } else {
+                    Log.e(TAG, "Failed to get certificate or private key")
+                    request?.cancel()
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error providing client certificate", e)
+                request?.cancel()
+            }
+        }.start()
     }
 
     private fun loadPwaUrl() {
@@ -543,21 +627,6 @@ class MainActivity : AppCompatActivity(),
         }
     }
 
-    override fun onNavigationItemSelected(item: MenuItem): Boolean {
-        when (item.itemId) {
-            R.id.nav_home -> {
-                loadPwaUrl()
-            }
-            R.id.nav_refresh -> {
-                loadPwaUrl()
-            }
-            R.id.nav_settings -> {
-                startActivity(Intent(this, SettingsActivity::class.java))
-            }
-        }
-        drawerLayout.closeDrawer(GravityCompat.START)
-        return true
-    }
 
     override fun onBackPressed() {
         when {
@@ -1098,6 +1167,23 @@ class MainActivity : AppCompatActivity(),
         preferencesHelper.registerOnChangeListener(this)
         // Update keep screen on state in case it changed in settings
         applyKeepScreenOnSetting()
+        // Update drawer header with current URL
+        updateDrawerHeader()
+
+        // Check if color changed - need to recreate activity
+        if (colorBeforePause.isNotEmpty()) {
+            val newColor = androidx.preference.PreferenceManager
+                .getDefaultSharedPreferences(this)
+                .getString("color_accent", "purple") ?: "purple"
+            if (colorBeforePause != newColor) {
+                Log.i(TAG, "Color changed, recreating activity: $colorBeforePause -> $newColor")
+                colorBeforePause = ""
+                urlBeforeSettings = ""
+                recreate()
+                return
+            }
+            colorBeforePause = ""
+        }
 
         // Reload if URL changed in settings
         if (urlBeforeSettings.isNotEmpty()) {
@@ -1117,9 +1203,12 @@ class MainActivity : AppCompatActivity(),
         super.onPause()
         webView.onPause()
         preferencesHelper.unregisterOnChangeListener(this)
-        // Track URL to detect changes when resuming
+        // Track URL and color to detect changes when resuming
         urlBeforeSettings = preferencesHelper.pwaUrl
-        Log.d(TAG, "onPause - tracking URL: $urlBeforeSettings")
+        colorBeforePause = androidx.preference.PreferenceManager
+            .getDefaultSharedPreferences(this)
+            .getString("color_accent", "purple") ?: "purple"
+        Log.d(TAG, "onPause - tracking URL: $urlBeforeSettings, color: $colorBeforePause")
     }
 
     /**

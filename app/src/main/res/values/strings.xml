@@ -34,6 +34,8 @@
     <string name="settings_auto_resume_network_title">Auto-resume on network change</string>
     <string name="settings_auto_resume_network_summary">Resume playback after network reconnection (WiFi/mobile switch)</string>
     <string name="settings_general">General</string>
+    <string name="settings_appearance">Appearance</string>
+    <string name="settings_color_accent_title">Color Accent</string>
 
     <!-- Battery Optimization -->
     <string name="battery_optimization_title">Disable Battery Optimization</string>
