@@ -117,16 +117,21 @@ git push origin master
 ### 3. Create Release
 
 ```bash
+# IMPORTANT: Update version in app/build.gradle.kts first!
+# - versionCode (increment by 1)
+# - versionName (e.g., "1.0.3")
+
 # Build release APK
 bash gradlew assembleRelease
 
-# Create GitHub release
-gh release create v1.x.x app/build/outputs/apk/release/app-release.apk \
+# Create GitHub release (name APK as massdroid-vX.X.X.apk)
+cp app/build/outputs/apk/release/app-release.apk /tmp/massdroid-v1.x.x.apk
+gh release create v1.x.x /tmp/massdroid-v1.x.x.apk \
   --title "MassDroid v1.x.x" \
-  --notes "- Change 1
-- Change 2"
+  --notes "Brief changelog"
 ```
 
 ### Notes
 - Keep commit messages brief
 - Test on device before pushing
+- **Always update versionCode/versionName before release!**

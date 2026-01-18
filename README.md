@@ -42,6 +42,8 @@ You can access Music Assistant from any browser, but a native Android app offers
 - **Auto-play on Bluetooth** – Automatically resume playback when connecting to Bluetooth audio devices.
 - **Auto-resume on Network Change** – Seamless playback continuation when switching between WiFi and mobile data.
 - **Dark Mode Support** – Follows system theme automatically.
+- **Color Accent Customization** – Choose your preferred accent color for the UI.
+- **mTLS Support** – Client certificate authentication for secure server connections.
 - **Configurable Server URL** – Connect to any Music Assistant server.
 
 ## Screenshots
@@ -132,6 +134,8 @@ Access settings from the navigation drawer (hamburger menu):
 | **Keep Screen On** | Prevent screen timeout while app is open |
 | **Auto-play on Bluetooth** | Resume playback when Bluetooth audio connects |
 | **Auto-resume on Network** | Resume after WiFi/mobile data switch |
+| **Accent Color** | Customize the app's accent color |
+| **Client Certificate** | Import PKCS#12 certificate for mTLS authentication |
 
 ## Permissions
 
