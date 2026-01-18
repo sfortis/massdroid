@@ -1,14 +1,17 @@
 <?xml version="1.0" encoding="utf-8"?>
 <network-security-config>
-    <!--
-    Allow cleartext traffic for:
-    - Local network servers (http://)
-    - SendSpin WebSocket protocol (ws://)
-    Users are encouraged to use HTTPS when possible.
-    -->
-    <base-config cleartextTrafficPermitted="true">
+    <!-- Default: require HTTPS -->
+    <base-config cleartextTrafficPermitted="false">
         <trust-anchors>
             <certificates src="system" />
         </trust-anchors>
     </base-config>
+
+    <!-- Allow cleartext for local networks (Music Assistant servers) -->
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="true">localhost</domain>
+        <domain includeSubdomains="true">10.0.0.0/8</domain>
+        <domain includeSubdomains="true">172.16.0.0/12</domain>
+        <domain includeSubdomains="true">192.168.0.0/16</domain>
+    </domain-config>
 </network-security-config>

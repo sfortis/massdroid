@@ -28,3 +28,17 @@
 # Keep custom WebViewClient and WebChromeClient
 -keep public class * extends android.webkit.WebViewClient
 -keep public class * extends android.webkit.WebChromeClient
+
+# Strip debug/verbose/info logs in release builds for performance
+# Keeps warning and error logs for production debugging
+-assumenosideeffects class android.util.Log {
+    public static int d(...);
+    public static int v(...);
+    public static int i(...);
+}
+
+# IMPORTANT: Keep JavascriptInterface inner class completely intact
+# This prevents R8 from optimizing away methods that JavaScript calls
+-keep class net.asksakis.massdroid.MainActivity$MediaMetadataInterface {
+    *;
+}

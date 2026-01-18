@@ -49,6 +49,12 @@ import androidx.drawerlayout.widget.DrawerLayout
 import com.google.android.material.appbar.MaterialToolbar
 import com.google.android.material.navigation.NavigationView
 import com.google.android.material.progressindicator.LinearProgressIndicator
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import net.asksakis.massdroid.R
 
 class MainActivity : AppCompatActivity(),
@@ -73,10 +79,12 @@ class MainActivity : AppCompatActivity(),
     private var currentDurationMs: Long = 0
     private var currentPositionMs: Long = 0
     private var currentPlaybackRate: Float = 1.0f
+    @Volatile
     private var isCurrentlyPlaying = false  // Track playback state ourselves
 
     // Bluetooth auto-play
     private var bluetoothReceiver: BluetoothAutoPlayReceiver? = null
+    @Volatile
     private var webViewReady = false
 
     // Network change monitoring
@@ -88,18 +96,27 @@ class MainActivity : AppCompatActivity(),
     // Track URL for detecting changes after settings
     private var urlBeforeSettings: String = ""
     private var colorBeforePause: String = ""
+    @Volatile
     private var wasPlayingBeforeNetworkLoss = false
     private var savedPositionMs: Long = 0  // Position saved at moment of network loss
     private var savedDurationMs: Long = 0  // Duration saved at moment of network loss
+    @Volatile
     private var waitingForStreamStart = false  // True while waiting for stream/start confirmation
-    private var streamStartCheckId = 0  // Incremented to cancel obsolete checks
+    private var streamStartCheckId = 0  // Counter for obsolete timeout checks (main thread only)
     private var playRetryCount = 0
     private val MAX_PLAY_RETRIES = 3
     private val STREAM_START_TIMEOUT_MS = 5000L  // Wait 5 seconds for stream/start before calling play()
 
+    // Coroutine scope for background operations (artwork decoding, etc.)
+    private val backgroundScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+
+    // Track current artwork bitmap to recycle on replacement
+    private var currentArtworkBitmap: Bitmap? = null
+
     companion object {
         private const val TAG = "MainActivity"
         private const val BLUETOOTH_PERMISSION_REQUEST = 100
+        private const val NOTIFICATION_PERMISSION_REQUEST = 101
     }
 
     // AudioService connection
@@ -156,6 +173,9 @@ class MainActivity : AppCompatActivity(),
         setupNavigationDrawer()
         setupWebView()
 
+        // Check notification permission for Android 13+
+        checkNotificationPermission()
+
         // Setup media components
         setupMediaSession()
         startAudioService()
@@ -171,8 +191,17 @@ class MainActivity : AppCompatActivity(),
 
         // Restore WebView state if available, otherwise load fresh
         if (savedInstanceState != null) {
-            Log.i(TAG, "Restoring WebView state from savedInstanceState")
-            webView.restoreState(savedInstanceState)
+            // Check if URL has changed since state was saved
+            val savedUrl = savedInstanceState.getString("saved_pwa_url")
+            val currentUrl = preferencesHelper.pwaUrl
+
+            if (savedUrl == currentUrl) {
+                Log.i(TAG, "Restoring WebView state from savedInstanceState")
+                webView.restoreState(savedInstanceState)
+            } else {
+                Log.i(TAG, "URL changed ($savedUrl -> $currentUrl), loading fresh instead of restoring")
+                loadPwaUrl()
+            }
         } else {
             Log.i(TAG, "No saved state, loading fresh URL")
             loadPwaUrl()
@@ -182,6 +211,8 @@ class MainActivity : AppCompatActivity(),
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
         Log.i(TAG, "Saving WebView state")
+        // Save current URL to detect changes on restore
+        outState.putString("saved_pwa_url", preferencesHelper.pwaUrl)
         webView.saveState(outState)
     }
 
@@ -191,10 +222,16 @@ class MainActivity : AppCompatActivity(),
                 Log.i(TAG, "Network lost, isCurrentlyPlaying=$isCurrentlyPlaying")
 
                 // Track playback state - will be used by onSendspinReady() when WebSocket reconnects
-                // Note: SendSpin WebSocket close event (onSendspinDisconnected) may also set this
+                // Only if the phone is the active player (not controlling external speakers)
                 if (isCurrentlyPlaying) {
-                    wasPlayingBeforeNetworkLoss = true
-                    Log.i(TAG, "Was playing before network loss - will auto-resume when SendSpin reconnects")
+                    checkIfPhoneIsActivePlayer { isPhonePlayer ->
+                        if (isPhonePlayer) {
+                            wasPlayingBeforeNetworkLoss = true
+                            Log.i(TAG, "Phone was playing before network loss - will auto-resume when SendSpin reconnects")
+                        } else {
+                            Log.i(TAG, "External speaker was active - skipping auto-resume")
+                        }
+                    }
                 }
             }
 
@@ -205,6 +242,26 @@ class MainActivity : AppCompatActivity(),
         })
 
         networkMonitor?.start()
+    }
+
+    /**
+     * Check and request POST_NOTIFICATIONS permission for Android 13+ (API 33+)
+     * Required for foreground service notifications to be visible.
+     */
+    private fun checkNotificationPermission() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
+                != PackageManager.PERMISSION_GRANTED) {
+                Log.i(TAG, "Requesting POST_NOTIFICATIONS permission")
+                ActivityCompat.requestPermissions(
+                    this,
+                    arrayOf(Manifest.permission.POST_NOTIFICATIONS),
+                    NOTIFICATION_PERMISSION_REQUEST
+                )
+            } else {
+                Log.d(TAG, "POST_NOTIFICATIONS permission already granted")
+            }
+        }
     }
 
     private fun setupBluetoothAutoPlay() {
@@ -406,6 +463,11 @@ class MainActivity : AppCompatActivity(),
                 // Validate this is a Music Assistant server (skip for auth pages)
                 if (url != null && !isAuthPage(url)) {
                     validateMusicAssistantServer()
+
+                    // Query current playback state after delay (wait for Vue app to initialize)
+                    Handler(Looper.getMainLooper()).postDelayed({
+                        queryCurrentPlaybackState()
+                    }, 3000)
                 }
             }
 
@@ -455,10 +517,10 @@ class MainActivity : AppCompatActivity(),
     }
 
     private fun provideClientCertificate(request: ClientCertRequest?, alias: String) {
-        Thread {
+        backgroundScope.launch {
             try {
-                val privateKey: PrivateKey? = KeyChain.getPrivateKey(this, alias)
-                val certificateChain: Array<X509Certificate>? = KeyChain.getCertificateChain(this, alias)
+                val privateKey: PrivateKey? = KeyChain.getPrivateKey(this@MainActivity, alias)
+                val certificateChain: Array<X509Certificate>? = KeyChain.getCertificateChain(this@MainActivity, alias)
 
                 if (privateKey != null && certificateChain != null) {
                     Log.i(TAG, "Providing client certificate: $alias")
@@ -471,7 +533,7 @@ class MainActivity : AppCompatActivity(),
                 Log.e(TAG, "Error providing client certificate", e)
                 request?.cancel()
             }
-        }.start()
+        }
     }
 
     private fun loadPwaUrl() {
@@ -628,6 +690,8 @@ class MainActivity : AppCompatActivity(),
     }
 
 
+    @Deprecated("Deprecated in Java")
+    @Suppress("DEPRECATION")
     override fun onBackPressed() {
         when {
             drawerLayout.isDrawerOpen(GravityCompat.START) -> {
@@ -769,11 +833,39 @@ class MainActivity : AppCompatActivity(),
                 const originalGetter = originalMetadataDescriptor.get || function() { return this._metadata; };
                 const originalSetter = originalMetadataDescriptor.set || function(value) { this._metadata = value; };
 
+                // Fetch artwork and convert to base64
+                const fetchArtworkBase64 = (artworkUrl) => {
+                    if (!artworkUrl || !window.AndroidMediaSession) return;
+
+                    fetch(artworkUrl)
+                        .then(response => {
+                            if (!response.ok) throw new Error('HTTP ' + response.status);
+                            return response.blob();
+                        })
+                        .then(blob => {
+                            const reader = new FileReader();
+                            reader.onloadend = () => {
+                                const base64 = reader.result.split(',')[1];
+                                if (base64) {
+                                    window.AndroidMediaSession.setArtworkBase64(base64);
+                                    console.log('[MediaSessionInterceptor] Artwork sent as base64');
+                                }
+                            };
+                            reader.readAsDataURL(blob);
+                        })
+                        .catch(err => console.warn('[MediaSessionInterceptor] Artwork fetch failed:', err));
+                };
+
                 // Debounced metadata update
                 const debouncedMetadataUpdate = debounce((title, artist, album, artwork, duration) => {
                     if (window.AndroidMediaSession) {
                         window.AndroidMediaSession.updateMetadata(title, artist, album, artwork, duration);
                         console.log('[MediaSessionInterceptor] Metadata forwarded (debounced)');
+
+                        // Fetch artwork via JavaScript (has cookies/auth)
+                        if (artwork) {
+                            fetchArtworkBase64(artwork);
+                        }
                     }
                 }, 300);
 
@@ -1058,8 +1150,7 @@ class MainActivity : AppCompatActivity(),
     }
 
     private fun startStreamStartTimeout() {
-        streamStartCheckId++
-        val currentCheckId = streamStartCheckId
+        val currentCheckId = ++streamStartCheckId
 
         Log.i(TAG, "Stream check #$currentCheckId: waiting ${STREAM_START_TIMEOUT_MS}ms for stream/start")
         Log.i(TAG, "Saved position for resume: ${savedPositionMs}ms / ${savedDurationMs}ms")
@@ -1291,6 +1382,29 @@ class MainActivity : AppCompatActivity(),
     }
 
     /**
+     * Check if the phone (SendSpin web player) is the active player.
+     * Used to determine if auto-resume should trigger on network change.
+     */
+    private fun checkIfPhoneIsActivePlayer(callback: (Boolean) -> Unit) {
+        val checkScript = """
+            (function() {
+                const sendspinId = localStorage.getItem('sendspin_webplayer_id');
+                const activeId = localStorage.getItem('activePlayerId');
+                return sendspinId && activeId && sendspinId === activeId;
+            })();
+        """.trimIndent()
+
+        // WebView methods must be called on the main thread
+        runOnUiThread {
+            webView.evaluateJavascript(checkScript) { result ->
+                val isPhonePlayer = result == "true"
+                Log.d(TAG, "checkIfPhoneIsActivePlayer: sendspinId==activeId? $isPhonePlayer")
+                callback(isPhonePlayer)
+            }
+        }
+    }
+
+    /**
      * JavaScript interface for PWA to update media metadata and playback state
      */
     inner class MediaMetadataInterface {
@@ -1315,39 +1429,12 @@ class MainActivity : AppCompatActivity(),
                     .putString(MediaMetadataCompat.METADATA_KEY_ALBUM, album)
                     .putLong(MediaMetadataCompat.METADATA_KEY_DURATION, durationMs)
 
-                // Add artwork URL for high-res album art
+                // Set metadata without artwork (artwork will be set separately via setArtworkBase64)
                 if (artworkUrl.isNotEmpty()) {
                     metadataBuilder.putString(MediaMetadataCompat.METADATA_KEY_ALBUM_ART_URI, artworkUrl)
-
-                    // Download and set bitmap in background for MediaSession
-                    Thread {
-                        try {
-                            val url = URL(artworkUrl)
-                            val connection = url.openConnection() as HttpURLConnection
-                            connection.doInput = true
-                            connection.connectTimeout = 10000
-                            connection.readTimeout = 10000
-                            connection.connect()
-                            val input: InputStream = connection.inputStream
-                            val artwork = BitmapFactory.decodeStream(input)
-
-                            runOnUiThread {
-                                metadataBuilder.putBitmap(MediaMetadataCompat.METADATA_KEY_ALBUM_ART, artwork)
-                                mediaSession?.setMetadata(metadataBuilder.build())
-                                Log.d(TAG, "MediaSession metadata updated with artwork: $title")
-                            }
-                        } catch (e: Exception) {
-                            Log.e(TAG, "Error loading artwork for MediaSession", e)
-                            runOnUiThread {
-                                mediaSession?.setMetadata(metadataBuilder.build())
-                                Log.d(TAG, "MediaSession metadata updated without artwork: $title")
-                            }
-                        }
-                    }.start()
-                } else {
-                    mediaSession?.setMetadata(metadataBuilder.build())
-                    Log.d(TAG, "MediaSession metadata updated: $title")
                 }
+                mediaSession?.setMetadata(metadataBuilder.build())
+                Log.d(TAG, "MediaSession metadata updated: $title")
 
                 // Update AudioService notification
                 if (audioServiceBound && audioService != null) {
@@ -1394,6 +1481,55 @@ class MainActivity : AppCompatActivity(),
                     audioService?.updatePlaybackState(isPlaying)
                 } else {
                     Log.w(TAG, "AudioService not bound - cannot update notification state")
+                }
+            }
+        }
+
+        @JavascriptInterface
+        fun setArtworkBase64(base64Data: String) {
+            Log.i(TAG, "setArtworkBase64() called, data length: ${base64Data.length}")
+
+            backgroundScope.launch {
+                try {
+                    val decodedBytes = android.util.Base64.decode(base64Data, android.util.Base64.DEFAULT)
+                    val artwork = BitmapFactory.decodeByteArray(decodedBytes, 0, decodedBytes.size)
+
+                    if (artwork != null) {
+                        withContext(Dispatchers.Main) {
+                            // Recycle old bitmap to prevent memory leak
+                            currentArtworkBitmap?.let { oldBitmap ->
+                                if (!oldBitmap.isRecycled && oldBitmap != artwork) {
+                                    try {
+                                        oldBitmap.recycle()
+                                        Log.d(TAG, "Recycled old artwork bitmap in MainActivity")
+                                    } catch (e: IllegalStateException) {
+                                        // Bitmap was already recycled by another coroutine, safe to ignore
+                                        Log.d(TAG, "Bitmap already recycled")
+                                    }
+                                }
+                            }
+                            currentArtworkBitmap = artwork
+
+                            // Update MediaSession with artwork
+                            val currentMetadata = mediaSession?.controller?.metadata
+                            if (currentMetadata != null) {
+                                val metadataBuilder = MediaMetadataCompat.Builder(currentMetadata)
+                                    .putBitmap(MediaMetadataCompat.METADATA_KEY_ALBUM_ART, artwork)
+                                mediaSession?.setMetadata(metadataBuilder.build())
+                                Log.d(TAG, "MediaSession artwork updated via base64")
+                            }
+
+                            // Update AudioService notification
+                            if (audioServiceBound && audioService != null) {
+                                audioService?.setArtworkBitmap(artwork)
+                                Log.d(TAG, "AudioService artwork updated via base64")
+                            }
+                        }
+                    } else {
+                        Log.w(TAG, "Failed to decode artwork bitmap from base64")
+                    }
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error decoding artwork base64", e)
                 }
             }
         }
@@ -1452,7 +1588,7 @@ class MainActivity : AppCompatActivity(),
             runOnUiThread {
                 if (waitingForStreamStart) {
                     Log.i(TAG, "Audio confirmed - auto-resume successful, clearing flags")
-                    // Cancel any pending timeout
+                    // Cancel any pending timeout by incrementing the check ID
                     streamStartCheckId++
                     waitingForStreamStart = false
                     wasPlayingBeforeNetworkLoss = false
@@ -1535,6 +1671,20 @@ class MainActivity : AppCompatActivity(),
 
     override fun onDestroy() {
         super.onDestroy()
+
+        // Cancel all coroutines
+        backgroundScope.cancel()
+
+        // Remove all pending handler callbacks
+        handler.removeCallbacksAndMessages(null)
+
+        // Recycle artwork bitmap
+        currentArtworkBitmap?.let { bitmap ->
+            if (!bitmap.isRecycled) {
+                bitmap.recycle()
+            }
+        }
+        currentArtworkBitmap = null
 
         // Stop network monitor
         networkMonitor?.stop()

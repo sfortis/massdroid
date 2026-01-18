@@ -6,8 +6,8 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import android.os.Binder
 import android.os.Build
 import android.os.Handler
@@ -15,15 +15,8 @@ import android.os.IBinder
 import android.os.Looper
 import android.support.v4.media.session.MediaSessionCompat
 import android.util.Log
-import android.util.LruCache
-import android.webkit.CookieManager
 import androidx.core.app.NotificationCompat
 import androidx.media.app.NotificationCompat.MediaStyle
-import java.io.InputStream
-import java.net.HttpURLConnection
-import java.net.URL
-import java.util.concurrent.ExecutorService
-import java.util.concurrent.Executors
 
 /**
  * Foreground service that manages media playback notification with MediaStyle.
@@ -33,7 +26,6 @@ import java.util.concurrent.Executors
  * - Play/Pause/Next/Previous controls
  * - Integration with MediaSession for lock screen controls
  * - Dynamic updates when track or playback state changes
- * - Artwork caching to prevent redundant downloads
  * - Thread-safe notification updates
  */
 class AudioService : Service() {
@@ -59,10 +51,8 @@ class AudioService : Service() {
     // Lock object for synchronizing playback state modifications
     private val stateLock = Any()
 
-    // Artwork caching
-    private lateinit var artworkCache: LruCache<String, Bitmap>
+    // Current artwork bitmap (set via setArtworkBitmap from MainActivity)
     private var currentArtwork: Bitmap? = null
-    private lateinit var artworkExecutor: ExecutorService
     private lateinit var mainHandler: Handler
 
     // MediaSession for lock screen controls
@@ -90,25 +80,22 @@ class AudioService : Service() {
         // Initialize handler for main thread operations
         mainHandler = Handler(Looper.getMainLooper())
 
-        // Initialize artwork cache (10MB max)
-        val maxMemory = (Runtime.getRuntime().maxMemory() / 1024).toInt()
-        val cacheSize = maxMemory / 8 // Use 1/8th of available memory
-        artworkCache = object : LruCache<String, Bitmap>(cacheSize) {
-            override fun sizeOf(key: String, bitmap: Bitmap): Int {
-                return bitmap.byteCount / 1024 // Size in KB
-            }
-        }
-
-        // Initialize executor for artwork downloads
-        artworkExecutor = Executors.newSingleThreadExecutor()
-
         // Create notification channel
         createNotificationChannel()
 
         // Start foreground with initial notification
+        // API 34+ requires explicit foreground service type
         try {
             val notification = buildNotification()
-            startForeground(NOTIFICATION_ID, notification)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                startForeground(
+                    NOTIFICATION_ID,
+                    notification,
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
+                )
+            } else {
+                startForeground(NOTIFICATION_ID, notification)
+            }
             Log.d(TAG, "Foreground service started successfully")
         } catch (e: Exception) {
             Log.e(TAG, "Error starting foreground service", e)
@@ -183,20 +170,35 @@ class AudioService : Service() {
     fun updateMetadata(title: String, artist: String, album: String, artworkUrl: String?) {
         Log.d(TAG, "Updating metadata: $title - $artist")
 
-        val artworkChanged = artworkUrl != null && artworkUrl != currentArtworkUrl
-
         currentTitle = title
         currentArtist = artist
         currentAlbum = album
         currentArtworkUrl = artworkUrl ?: ""
 
-        if (artworkChanged && currentArtworkUrl.isNotEmpty()) {
-            // Load artwork asynchronously
-            loadArtworkAsync(currentArtworkUrl)
-        } else {
-            // Update notification immediately
-            updateNotification()
+        // Update notification (artwork will be set separately via setArtworkBitmap)
+        updateNotification()
+    }
+
+    /**
+     * Set artwork bitmap directly (called from MainActivity when artwork is fetched via JavaScript)
+     * Recycles the previous bitmap to prevent memory leaks.
+     */
+    fun setArtworkBitmap(bitmap: Bitmap) {
+        Log.d(TAG, "setArtworkBitmap called")
+        // Recycle old bitmap to prevent memory leak
+        currentArtwork?.let { oldBitmap ->
+            if (!oldBitmap.isRecycled && oldBitmap != bitmap) {
+                try {
+                    oldBitmap.recycle()
+                    Log.d(TAG, "Recycled old artwork bitmap")
+                } catch (e: IllegalStateException) {
+                    // Bitmap was already recycled, safe to ignore
+                    Log.d(TAG, "Bitmap already recycled")
+                }
+            }
         }
+        currentArtwork = bitmap
+        updateNotification()
     }
 
     /**
@@ -301,111 +303,6 @@ class AudioService : Service() {
             it.onNext()
             Log.i(TAG, "Callback invocation completed")
         } ?: Log.e(TAG, "CRITICAL: MediaControlCallback is NULL - cannot execute next!")
-    }
-
-    /**
-     * Load artwork asynchronously with caching
-     */
-    private fun loadArtworkAsync(artworkUrl: String) {
-        // Check cache first
-        val cachedBitmap = artworkCache.get(artworkUrl)
-        if (cachedBitmap != null) {
-            Log.d(TAG, "Using cached artwork for: $artworkUrl")
-            currentArtwork = cachedBitmap
-            updateNotification()
-            return
-        }
-
-        // Download in background
-        artworkExecutor.execute {
-            val downloadedBitmap = downloadArtwork(artworkUrl)
-
-            if (downloadedBitmap != null) {
-                // Cache the bitmap
-                artworkCache.put(artworkUrl, downloadedBitmap)
-
-                // Update on main thread
-                mainHandler.post {
-                    // Verify URL hasn't changed while downloading
-                    if (artworkUrl == currentArtworkUrl) {
-                        currentArtwork = downloadedBitmap
-                        updateNotification()
-                        Log.d(TAG, "Artwork loaded and notification updated")
-                    } else {
-                        Log.d(TAG, "Artwork URL changed during download, discarding")
-                    }
-                }
-            } else {
-                Log.w(TAG, "Failed to download artwork from: $artworkUrl")
-                mainHandler.post {
-                    currentArtwork = null
-                    updateNotification()
-                }
-            }
-        }
-    }
-
-    /**
-     * Download artwork from URL (blocking call, must be called on background thread)
-     */
-    private fun downloadArtwork(artworkUrl: String): Bitmap? {
-        return try {
-            val url = URL(artworkUrl)
-            val connection = url.openConnection() as HttpURLConnection
-
-            // Add cookies from WebView session for authentication
-            val cookieManager = CookieManager.getInstance()
-            val cookies = cookieManager.getCookie(artworkUrl)
-            if (cookies != null) {
-                connection.setRequestProperty("Cookie", cookies)
-                Log.d(TAG, "Added cookies to artwork request")
-            } else {
-                Log.w(TAG, "No cookies available for artwork URL")
-            }
-
-            connection.doInput = true
-            connection.connectTimeout = 10000 // 10 second timeout
-            connection.readTimeout = 10000
-            connection.connect()
-
-            val responseCode = connection.responseCode
-            if (responseCode == HttpURLConnection.HTTP_OK) {
-                val input: InputStream = connection.inputStream
-                var bitmap = BitmapFactory.decodeStream(input)
-                input.close()
-
-                // Scale bitmap if too large (max 512x512 for notification)
-                if (bitmap != null) {
-                    bitmap = scaleBitmap(bitmap, 512, 512)
-                }
-
-                bitmap
-            } else {
-                Log.e(TAG, "HTTP error downloading artwork: $responseCode")
-                null
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Error downloading artwork", e)
-            null
-        }
-    }
-
-    /**
-     * Scale bitmap to fit within max dimensions while preserving aspect ratio
-     */
-    private fun scaleBitmap(source: Bitmap, maxWidth: Int, maxHeight: Int): Bitmap {
-        val width = source.width
-        val height = source.height
-
-        if (width <= maxWidth && height <= maxHeight) {
-            return source
-        }
-
-        val scale = minOf(maxWidth.toFloat() / width, maxHeight.toFloat() / height)
-        val newWidth = (width * scale).toInt()
-        val newHeight = (height * scale).toInt()
-
-        return Bitmap.createScaledBitmap(source, newWidth, newHeight, true)
     }
 
     /**
@@ -518,12 +415,6 @@ class AudioService : Service() {
 
     override fun onDestroy() {
         Log.d(TAG, "AudioService onDestroy called")
-
-        // Shutdown executor
-        artworkExecutor.shutdown()
-
-        // Clear artwork cache
-        artworkCache.evictAll()
 
         // Recycle current artwork
         currentArtwork?.let {
