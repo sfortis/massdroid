@@ -1,17 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
 <network-security-config>
-    <!-- Default: require HTTPS -->
-    <base-config cleartextTrafficPermitted="false">
+    <!--
+        Allow cleartext (HTTP) traffic for Music Assistant servers.
+        Many users run MA on local networks without HTTPS.
+        HTTPS is still supported and recommended for remote access.
+    -->
+    <base-config cleartextTrafficPermitted="true">
         <trust-anchors>
             <certificates src="system" />
         </trust-anchors>
     </base-config>
-
-    <!-- Allow cleartext for local networks (Music Assistant servers) -->
-    <domain-config cleartextTrafficPermitted="true">
-        <domain includeSubdomains="true">localhost</domain>
-        <domain includeSubdomains="true">10.0.0.0/8</domain>
-        <domain includeSubdomains="true">172.16.0.0/12</domain>
-        <domain includeSubdomains="true">192.168.0.0/16</domain>
-    </domain-config>
 </network-security-config>

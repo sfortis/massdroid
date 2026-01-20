@@ -10,9 +10,7 @@ import android.content.pm.ServiceInfo
 import android.graphics.Bitmap
 import android.os.Binder
 import android.os.Build
-import android.os.Handler
 import android.os.IBinder
-import android.os.Looper
 import android.support.v4.media.session.MediaSessionCompat
 import android.util.Log
 import androidx.core.app.NotificationCompat
@@ -44,7 +42,6 @@ class AudioService : Service() {
     private var currentTitle = "Music Assistant"
     private var currentArtist = "Ready to play"
     private var currentAlbum = ""
-    private var currentArtworkUrl = ""
     @Volatile
     private var isPlaying = false
 
@@ -53,7 +50,6 @@ class AudioService : Service() {
 
     // Current artwork bitmap (set via setArtworkBitmap from MainActivity)
     private var currentArtwork: Bitmap? = null
-    private lateinit var mainHandler: Handler
 
     // MediaSession for lock screen controls
     private var mediaSession: MediaSessionCompat? = null
@@ -76,9 +72,6 @@ class AudioService : Service() {
     override fun onCreate() {
         super.onCreate()
         Log.d(TAG, "AudioService onCreate called")
-
-        // Initialize handler for main thread operations
-        mainHandler = Handler(Looper.getMainLooper())
 
         // Create notification channel
         createNotificationChannel()
@@ -173,9 +166,8 @@ class AudioService : Service() {
         currentTitle = title
         currentArtist = artist
         currentAlbum = album
-        currentArtworkUrl = artworkUrl ?: ""
+        // Note: artworkUrl is not stored - bitmap is set separately via setArtworkBitmap
 
-        // Update notification (artwork will be set separately via setArtworkBitmap)
         updateNotification()
     }
 
@@ -395,7 +387,12 @@ class AudioService : Service() {
 
         Log.d(TAG, "Creating PendingIntent for action: $action, requestCode: $requestCode, flags: $flags, SDK_INT: ${Build.VERSION.SDK_INT}")
 
-        val pendingIntent = PendingIntent.getService(this, requestCode, intent, flags)
+        // Use getForegroundService for Android O+ (required for foreground service intents)
+        val pendingIntent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            PendingIntent.getForegroundService(this, requestCode, intent, flags)
+        } else {
+            PendingIntent.getService(this, requestCode, intent, flags)
+        }
 
         Log.d(TAG, "PendingIntent created successfully: ${pendingIntent != null}")
 

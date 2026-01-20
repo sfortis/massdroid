@@ -96,3 +96,11 @@ Thumbs.db
 
 # Gradle Wrapper
 !gradle/wrapper/gradle-wrapper.jar
+
+# Utils directory (local testing, credentials)
+utils/
+
+# Debug utilities (local only)
+app/src/main/java/net/asksakis/massdroid/SendSpinDebug.kt
+
+*.md

@@ -72,7 +72,6 @@ class MainActivity : AppCompatActivity(),
     private var mediaSession: MediaSessionCompat? = null
     private var audioService: AudioService? = null
     private var audioServiceBound = false
-    private var musicAssistantBridge: MusicAssistantBridge? = null
     private val handler = Handler(Looper.getMainLooper())
 
     // Position state tracking
@@ -92,6 +91,10 @@ class MainActivity : AppCompatActivity(),
 
     // Client certificate alias for mTLS
     private var clientCertAlias: String? = null
+
+    // Selected player tracking (for multi-room speaker control)
+    private var selectedPlayerId: String? = null
+    private var selectedPlayerName: String? = null
 
     // Track URL for detecting changes after settings
     private var urlBeforeSettings: String = ""
@@ -771,352 +774,111 @@ class MainActivity : AppCompatActivity(),
     }
 
     private fun startAudioService() {
+        // Unbind first if already bound (handles app restart scenario)
+        if (audioServiceBound) {
+            try {
+                unbindService(serviceConnection)
+                Log.d(TAG, "Unbound existing AudioService connection")
+            } catch (e: Exception) {
+                Log.w(TAG, "Error unbinding existing service", e)
+            }
+            audioServiceBound = false
+            audioService = null
+        }
+
         val intent = Intent(this, AudioService::class.java)
         startService(intent)
         bindService(intent, serviceConnection, BIND_AUTO_CREATE)
         Log.d(TAG, "AudioService started and binding")
     }
 
+    /**
+     * Load JavaScript file from assets and inject into WebView.
+     */
+    private fun loadJsFromAssets(filename: String): String {
+        return try {
+            assets.open("js/$filename").bufferedReader().use { it.readText() }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to load JS file: $filename", e)
+            ""
+        }
+    }
+
+    /**
+     * Inject all JavaScript modules into WebView.
+     * Load order matters: ma-websocket -> mediasession-polyfill -> ws-interceptor
+     */
     private fun injectMediaSessionPolyfill() {
-        val polyfillScript = """
+        Log.d(TAG, "Injecting JavaScript modules from assets...")
+
+        // Load all JS files
+        val maWebSocketJs = loadJsFromAssets("ma-websocket.js")
+        val mediaSessionJs = loadJsFromAssets("mediasession-polyfill.js")
+        val wsInterceptorJs = loadJsFromAssets("ws-interceptor.js")
+        val playerObserverJs = loadJsFromAssets("player-selection-observer.js")
+        val injectJs = loadJsFromAssets("inject.js")
+
+        // Combine in correct order
+        val combinedScript = """
             (function() {
-                console.log('[MediaSessionInterceptor] ========================================');
-                console.log('[MediaSessionInterceptor] Installing MediaSession interceptors...');
-                console.log('[MediaSessionInterceptor] ========================================');
+                // === MA WEBSOCKET MANAGER ===
+                $maWebSocketJs
 
-                // Debounce helper to prevent notification flickering
-                const debounce = (func, wait) => {
-                    let timeout;
-                    return function executedFunction(...args) {
-                        const later = () => {
-                            clearTimeout(timeout);
-                            func(...args);
-                        };
-                        clearTimeout(timeout);
-                        timeout = setTimeout(later, wait);
-                    };
-                };
+                // === MEDIASESSION POLYFILL ===
+                $mediaSessionJs
 
-                // Store current position state
-                window._mediaPositionState = { duration: 0, position: 0, playbackRate: 1 };
+                // === WEBSOCKET INTERCEPTOR ===
+                $wsInterceptorJs
 
-                // CRITICAL: Create MediaMetadata class FIRST, before PWA tries to use it
-                if (typeof window.MediaMetadata === 'undefined') {
-                    console.log('[MediaSessionPolyfill] Creating MediaMetadata class...');
-                    window.MediaMetadata = class MediaMetadata {
-                        constructor(metadata = {}) {
-                            this.title = metadata.title || '';
-                            this.artist = metadata.artist || '';
-                            this.album = metadata.album || '';
-                            this.artwork = metadata.artwork || [];
-                        }
-                    };
-                    console.log('[MediaSessionPolyfill] MediaMetadata class created');
-                } else {
-                    console.log('[MediaSessionPolyfill] MediaMetadata already exists');
-                }
+                // === PLAYER SELECTION OBSERVER ===
+                $playerObserverJs
 
-                // Check if MediaSession API exists
-                if (typeof navigator.mediaSession === 'undefined') {
-                    console.log('[MediaSessionInterceptor] navigator.mediaSession not available, creating polyfill...');
-                    navigator.mediaSession = {
-                        metadata: null,
-                        playbackState: 'none',
-                        setActionHandler: function(action, handler) {},
-                        setPositionState: function(state) {}
-                    };
-                }
-                console.log('[MediaSessionInterceptor] MediaSession API available');
-
-                // Store original descriptor for metadata property
-                const originalMetadataDescriptor = Object.getOwnPropertyDescriptor(navigator.mediaSession, 'metadata') || {};
-                const originalGetter = originalMetadataDescriptor.get || function() { return this._metadata; };
-                const originalSetter = originalMetadataDescriptor.set || function(value) { this._metadata = value; };
-
-                // Fetch artwork and convert to base64
-                const fetchArtworkBase64 = (artworkUrl) => {
-                    if (!artworkUrl || !window.AndroidMediaSession) return;
-
-                    fetch(artworkUrl)
-                        .then(response => {
-                            if (!response.ok) throw new Error('HTTP ' + response.status);
-                            return response.blob();
-                        })
-                        .then(blob => {
-                            const reader = new FileReader();
-                            reader.onloadend = () => {
-                                const base64 = reader.result.split(',')[1];
-                                if (base64) {
-                                    window.AndroidMediaSession.setArtworkBase64(base64);
-                                    console.log('[MediaSessionInterceptor] Artwork sent as base64');
-                                }
-                            };
-                            reader.readAsDataURL(blob);
-                        })
-                        .catch(err => console.warn('[MediaSessionInterceptor] Artwork fetch failed:', err));
-                };
-
-                // Debounced metadata update
-                const debouncedMetadataUpdate = debounce((title, artist, album, artwork, duration) => {
-                    if (window.AndroidMediaSession) {
-                        window.AndroidMediaSession.updateMetadata(title, artist, album, artwork, duration);
-                        console.log('[MediaSessionInterceptor] Metadata forwarded (debounced)');
-
-                        // Fetch artwork via JavaScript (has cookies/auth)
-                        if (artwork) {
-                            fetchArtworkBase64(artwork);
-                        }
-                    }
-                }, 300);
-
-                // Intercept metadata setter
-                Object.defineProperty(navigator.mediaSession, 'metadata', {
-                    get: function() {
-                        return originalGetter.call(this);
-                    },
-                    set: function(value) {
-                        if (value) {
-                            const artwork = value.artwork?.[2]?.src || value.artwork?.[1]?.src || value.artwork?.[0]?.src || '';
-                            const duration = window._mediaPositionState.duration || 0;
-                            debouncedMetadataUpdate(
-                                value.title || 'Unknown',
-                                value.artist || 'Unknown',
-                                value.album || '',
-                                artwork,
-                                Math.round(duration * 1000)
-                            );
-                        }
-                        originalSetter.call(this, value);
-                    },
-                    configurable: true,
-                    enumerable: true
-                });
-
-                // Store original playbackState descriptor
-                const originalPlaybackStateDescriptor = Object.getOwnPropertyDescriptor(navigator.mediaSession, 'playbackState') || {};
-                const originalPlaybackStateGetter = originalPlaybackStateDescriptor.get || function() { return this._playbackState || 'none'; };
-                const originalPlaybackStateSetter = originalPlaybackStateDescriptor.set || function(value) { this._playbackState = value; };
-
-                // Debounced playback state update
-                const debouncedPlaybackUpdate = debounce((state, position) => {
-                    if (window.AndroidMediaSession) {
-                        window.AndroidMediaSession.updatePlaybackState(state, position);
-                        console.log('[MediaSessionInterceptor] Playback state forwarded (debounced):', state);
-                    }
-                }, 200);
-
-                // Intercept playbackState setter
-                Object.defineProperty(navigator.mediaSession, 'playbackState', {
-                    get: function() {
-                        return originalPlaybackStateGetter.call(this);
-                    },
-                    set: function(value) {
-                        const position = Math.round((window._mediaPositionState.position || 0) * 1000);
-                        debouncedPlaybackUpdate(value, position);
-                        originalPlaybackStateSetter.call(this, value);
-                    },
-                    configurable: true,
-                    enumerable: true
-                });
-
-                // Intercept setPositionState to capture duration and position
-                const originalSetPositionState = navigator.mediaSession.setPositionState?.bind(navigator.mediaSession);
-                navigator.mediaSession.setPositionState = function(state) {
-                    if (state) {
-                        window._mediaPositionState = {
-                            duration: state.duration || 0,
-                            position: state.position || 0,
-                            playbackRate: state.playbackRate || 1
-                        };
-
-                        // Update Android with position info
-                        if (window.AndroidMediaSession) {
-                            const durationMs = Math.round((state.duration || 0) * 1000);
-                            const positionMs = Math.round((state.position || 0) * 1000);
-                            window.AndroidMediaSession.updatePositionState(durationMs, positionMs, state.playbackRate || 1);
-                        }
-                    }
-                    if (originalSetPositionState) {
-                        return originalSetPositionState(state);
-                    }
-                };
-
-                // Intercept setActionHandler to capture handlers
-                const originalSetActionHandler = navigator.mediaSession.setActionHandler?.bind(navigator.mediaSession);
-                const handlers = {};
-                navigator.mediaSession.setActionHandler = function(action, handler) {
-                    handlers[action] = handler;
-                    if (originalSetActionHandler) {
-                        return originalSetActionHandler(action, handler);
-                    }
-                };
-
-                // Create window.musicPlayer interface
-                window.musicPlayer = {
-                    play: function() {
-                        const handler = handlers['play'];
-                        if (handler) handler();
-                    },
-                    pause: function() {
-                        const handler = handlers['pause'];
-                        if (handler) handler();
-                    },
-                    next: function() {
-                        const handler = handlers['nexttrack'];
-                        if (handler) handler();
-                    },
-                    previous: function() {
-                        const handler = handlers['previoustrack'];
-                        if (handler) handler();
-                    },
-                    seekTo: function(positionSec) {
-                        const handler = handlers['seekto'];
-                        if (handler) {
-                            handler({ seekTime: positionSec });
-                        }
-                    },
-                    _getHandlers: function() {
-                        return Object.keys(handlers);
-                    }
-                };
-
-                console.log('[MediaSessionInterceptor] Interceptor installed successfully');
-
-                // === WEBSOCKET INTERCEPTION FOR SENDSPIN ===
-                // Intercept WebSocket to detect SendSpin protocol messages
-                const OriginalWebSocket = window.WebSocket;
-                window.WebSocket = function(url, protocols) {
-                    const ws = protocols ? new OriginalWebSocket(url, protocols) : new OriginalWebSocket(url);
-                    const urlStr = url.toString();
-
-                    if (urlStr.includes('/sendspin')) {
-                        console.log('[WebSocketInterceptor] Intercepting SendSpin WebSocket:', urlStr);
-
-                        ws.addEventListener('message', function(event) {
-                            try {
-                                // Only parse text messages (not binary audio data)
-                                if (typeof event.data === 'string') {
-                                    const msg = JSON.parse(event.data);
-
-                                    // server/hello = control connection ready
-                                    if (msg.type === 'server/hello') {
-                                        console.log('[WebSocketInterceptor] server/hello received');
-                                        if (window.AndroidMediaSession && window.AndroidMediaSession.onSendspinConnected) {
-                                            window.AndroidMediaSession.onSendspinConnected();
-                                        }
-                                    }
-
-                                    // stream/start = audio streaming actually started
-                                    if (msg.type === 'stream/start') {
-                                        console.log('[WebSocketInterceptor] stream/start received - audio streaming!');
-                                        if (window.AndroidMediaSession && window.AndroidMediaSession.onSendspinStreamStart) {
-                                            window.AndroidMediaSession.onSendspinStreamStart();
-                                        }
-                                    }
-
-                                    // stream/end = audio streaming stopped
-                                    if (msg.type === 'stream/end' || msg.type === 'stream/clear') {
-                                        console.log('[WebSocketInterceptor] stream ended');
-                                    }
-                                }
-                            } catch (e) {
-                                // Ignore parse errors (binary data, etc)
-                            }
-                        });
-
-                        ws.addEventListener('close', function(event) {
-                            console.log('[WebSocketInterceptor] SendSpin WebSocket closed:', event.code, event.reason);
-                            if (window.AndroidMediaSession && window.AndroidMediaSession.onSendspinDisconnected) {
-                                window.AndroidMediaSession.onSendspinDisconnected();
-                            }
-                        });
-                    }
-
-                    return ws;
-                };
-                // Preserve WebSocket constants
-                window.WebSocket.CONNECTING = OriginalWebSocket.CONNECTING;
-                window.WebSocket.OPEN = OriginalWebSocket.OPEN;
-                window.WebSocket.CLOSING = OriginalWebSocket.CLOSING;
-                window.WebSocket.CLOSED = OriginalWebSocket.CLOSED;
-
-                console.log('[MediaSessionInterceptor] WebSocket interceptor installed');
+                // === INJECTION MARKER ===
+                $injectJs
             })();
         """.trimIndent()
 
-        webView.evaluateJavascript(polyfillScript, null)
+        webView.evaluateJavascript(combinedScript) { result ->
+            Log.d(TAG, "JavaScript injection complete")
+        }
     }
 
-    private fun initializeMusicAssistantBridge() {
-        musicAssistantBridge = MusicAssistantBridge(webView, object : MusicAssistantBridge.BridgeCallback {
-            override fun onBridgeReady() {
-                Log.i(TAG, "Music Assistant bridge is ready")
-            }
-
-            override fun onBridgeError(error: String) {
-                Log.e(TAG, "Music Assistant bridge error: $error")
-            }
-
-            override fun onMetadataUpdate(
-                title: String,
-                artist: String,
-                album: String,
-                artworkUrl: String,
-                durationMs: Long
-            ) {
-                Log.d(TAG, "Metadata update: $title - $artist")
-                audioService?.updateMetadata(title, artist, album, artworkUrl)
-            }
-
-            override fun onPlaybackStateUpdate(state: String, positionMs: Long) {
-                Log.d(TAG, "Playback state update: $state")
-                val isPlaying = state == "playing"
-                audioService?.updatePlaybackState(isPlaying)
-                updatePlaybackState(
-                    if (isPlaying) PlaybackStateCompat.STATE_PLAYING
-                    else PlaybackStateCompat.STATE_PAUSED
-                )
-            }
-        })
-
-        musicAssistantBridge?.initialize()
-    }
-
+    /**
+     * Execute media command via Music Assistant WebSocket API.
+     * This controls ANY player (Sonos, Chromecast, local SendSpin, etc.)
+     */
     private fun executeMediaCommand(command: String) {
-        val script = when (command) {
-            "play" -> """
-                (function() {
-                    console.log('[AutoResume] Attempting to play...');
-                    console.log('[AutoResume] window.musicPlayer exists:', !!window.musicPlayer);
-                    if (window.musicPlayer) {
-                        console.log('[AutoResume] Available handlers:', window.musicPlayer._getHandlers ? window.musicPlayer._getHandlers() : 'N/A');
-                        if (window.musicPlayer.play) {
-                            console.log('[AutoResume] Calling play()...');
-                            window.musicPlayer.play();
-                        }
-                    }
-                })();
-            """.trimIndent()
-            "pause" -> "if (window.musicPlayer && window.musicPlayer.pause) window.musicPlayer.pause();"
-            "playPause" -> """
-                (function() {
-                    if (window.musicPlayer) {
-                        const isPlaying = window.AndroidMediaSession?.playbackState === 'playing';
-                        if (isPlaying && window.musicPlayer.pause) {
-                            window.musicPlayer.pause();
-                        } else if (window.musicPlayer.play) {
-                            window.musicPlayer.play();
-                        }
-                    }
-                })();
-            """.trimIndent()
-            "next" -> "if (window.musicPlayer && window.musicPlayer.next) window.musicPlayer.next();"
-            "previous" -> "if (window.musicPlayer && window.musicPlayer.previous) window.musicPlayer.previous();"
+        val maCommand = when (command) {
+            "play" -> "play"
+            "pause" -> "pause"
+            "playPause" -> "play_pause"
+            "next" -> "next"
+            "previous" -> "previous"
             else -> return
         }
 
+        // Clean, simple script using MaWebSocket manager
+        val script = """
+            (function() {
+                // Try MaWebSocket first (controls any player including Sonos)
+                if (window.MaWebSocket && window.MaWebSocket.isConnected()) {
+                    const result = window.MaWebSocket.$maCommand();
+                    return result ? 'ma_websocket' : 'ma_websocket_failed';
+                }
+
+                // Fallback to local musicPlayer (only controls SendSpin WebView player)
+                if (window.musicPlayer && window.musicPlayer.$command) {
+                    window.musicPlayer.$command();
+                    return 'local_fallback';
+                }
+
+                console.warn('[MediaCommand] No handler available for: $command');
+                return 'no_handler';
+            })();
+        """.trimIndent()
+
         webView.evaluateJavascript(script) { result ->
-            Log.d(TAG, "Media command '$command' executed: $result")
+            Log.d(TAG, "Media command '$command' -> $result")
         }
     }
 
@@ -1189,25 +951,46 @@ class MainActivity : AppCompatActivity(),
 
         Log.i(TAG, "triggerPlay: position=${resumePositionMs}ms, duration=${durationMs}ms, will seek to=${seekPositionMs}ms")
 
+        // Auto-resume should ONLY affect the phone player, never external speakers.
+        // Use explicit player ID to avoid accidentally controlling Sonos/Chromecast.
         val script = """
             (function() {
-                if (!window.musicPlayer || !window.musicPlayer.play) {
-                    console.log('[AutoResume] musicPlayer not ready');
+                const phonePlayerId = localStorage.getItem('sendspin_webplayer_id');
+
+                if (!phonePlayerId) {
+                    console.log('[AutoResume] No phone player ID found, cannot resume');
                     if (window.AndroidMediaSession) {
                         window.AndroidMediaSession.onPlayFailed();
                     }
                     return;
                 }
 
-                const playerId = localStorage.getItem('sendspin_webplayer_id');
-                console.log('[AutoResume] Calling play(), player ID: ' + playerId);
-                window.musicPlayer.play();
+                console.log('[AutoResume] Resuming phone player: ' + phonePlayerId);
+
+                // Use MaWebSocket with explicit player ID to ensure we only control the phone
+                if (window.MaWebSocket && window.MaWebSocket.isConnected()) {
+                    window.MaWebSocket.play(phonePlayerId);
+                    console.log('[AutoResume] Sent play to phone via WebSocket');
+                } else if (window.musicPlayer && window.musicPlayer.play) {
+                    // Fallback to local handler (less reliable)
+                    window.musicPlayer.play();
+                    console.log('[AutoResume] Fallback: sent play via musicPlayer');
+                } else {
+                    console.log('[AutoResume] No play mechanism available');
+                    if (window.AndroidMediaSession) {
+                        window.AndroidMediaSession.onPlayFailed();
+                    }
+                    return;
+                }
 
                 // Seek to saved position after a short delay (only if valid)
                 if ($seekPositionMs > 0) {
                     setTimeout(function() {
                         console.log('[AutoResume] Seeking to ${seekPositionMs}ms');
-                        if (window.musicPlayer.seekTo) {
+                        // Use explicit player ID for seek too
+                        if (window.MaWebSocket && window.MaWebSocket.isConnected()) {
+                            window.MaWebSocket.seek(${seekPositionMs / 1000.0}, phonePlayerId);
+                        } else if (window.musicPlayer && window.musicPlayer.seekTo) {
                             window.musicPlayer.seekTo(${seekPositionMs / 1000.0});
                         }
                     }, 1500);
@@ -1220,20 +1003,31 @@ class MainActivity : AppCompatActivity(),
         webView.evaluateJavascript(script, null)
     }
 
+    /**
+     * Execute seek command via Music Assistant WebSocket API.
+     */
     private fun executeSeekCommand(positionMs: Long) {
         val positionSec = positionMs / 1000.0
         val script = """
             (function() {
+                // Try MaWebSocket first
+                if (window.MaWebSocket && window.MaWebSocket.isConnected()) {
+                    const result = window.MaWebSocket.seek($positionSec);
+                    return result ? 'ma_seek' : 'ma_seek_failed';
+                }
+
+                // Fallback to local musicPlayer
                 if (window.musicPlayer && window.musicPlayer.seekTo) {
                     window.musicPlayer.seekTo($positionSec);
-                    return 'seeked to $positionSec';
+                    return 'local_seek';
                 }
-                return 'seekTo not available';
+
+                return 'seek_not_available';
             })();
         """.trimIndent()
 
         webView.evaluateJavascript(script) { result ->
-            Log.d(TAG, "Seek command executed: $result")
+            Log.d(TAG, "Seek command -> $result")
         }
     }
 
@@ -1382,15 +1176,27 @@ class MainActivity : AppCompatActivity(),
     }
 
     /**
-     * Check if the phone (SendSpin web player) is the active player.
+     * Check if the phone (SendSpin web player) is the selected player.
      * Used to determine if auto-resume should trigger on network change.
+     * Auto-resume only makes sense for the phone speaker, not external players.
      */
     private fun checkIfPhoneIsActivePlayer(callback: (Boolean) -> Unit) {
         val checkScript = """
             (function() {
                 const sendspinId = localStorage.getItem('sendspin_webplayer_id');
-                const activeId = localStorage.getItem('activePlayerId');
-                return sendspinId && activeId && sendspinId === activeId;
+
+                // Use MaWebSocket's selected player (our source of truth)
+                if (window.MaWebSocket && window.MaWebSocket._selectedPlayerId) {
+                    const isPhone = sendspinId && window.MaWebSocket._selectedPlayerId === sendspinId;
+                    console.log('[AutoResume] Phone selected:', isPhone,
+                        'sendspinId:', sendspinId,
+                        'selectedId:', window.MaWebSocket._selectedPlayerId);
+                    return isPhone;
+                }
+
+                // Fallback: if no selection yet, assume phone is active
+                console.log('[AutoResume] No selection yet, assuming phone');
+                return true;
             })();
         """.trimIndent()
 
@@ -1398,7 +1204,7 @@ class MainActivity : AppCompatActivity(),
         runOnUiThread {
             webView.evaluateJavascript(checkScript) { result ->
                 val isPhonePlayer = result == "true"
-                Log.d(TAG, "checkIfPhoneIsActivePlayer: sendspinId==activeId? $isPhonePlayer")
+                Log.d(TAG, "checkIfPhoneIsActivePlayer: $isPhonePlayer")
                 callback(isPhonePlayer)
             }
         }
@@ -1408,6 +1214,32 @@ class MainActivity : AppCompatActivity(),
      * JavaScript interface for PWA to update media metadata and playback state
      */
     inner class MediaMetadataInterface {
+        // Debug logging via SendSpinDebug
+        @JavascriptInterface
+        fun logDebug(tag: String, message: String) {
+            Log.d("WS_$tag", message)
+        }
+
+        @JavascriptInterface
+        fun logWsConnection(url: String, label: String) {
+            SendSpinDebug.logConnection(url, label)
+        }
+
+        @JavascriptInterface
+        fun logWsDisconnection(label: String, code: Int, reason: String) {
+            SendSpinDebug.logDisconnection(label, code, reason)
+        }
+
+        @JavascriptInterface
+        fun logWsMessage(source: String, msgType: String, payload: String) {
+            SendSpinDebug.logMessage(source, msgType, payload)
+        }
+
+        @JavascriptInterface
+        fun dumpDebugState() {
+            SendSpinDebug.dumpState(webView)
+        }
+
         @JavascriptInterface
         fun updateMetadata(title: String, artist: String, album: String, artworkUrl: String, durationMs: Long) {
             Log.i(TAG, "========================================")
@@ -1596,17 +1428,21 @@ class MainActivity : AppCompatActivity(),
             Log.i(TAG, "========================================")
 
             runOnUiThread {
-                // If we were playing or waiting for resume, mark for auto-resume on reconnect
+                // Only auto-resume if PHONE was the selected player
+                // External speakers handle their own reconnection
                 if (isCurrentlyPlaying || waitingForStreamStart) {
-                    Log.i(TAG, "Will auto-resume on reconnect")
-                    wasPlayingBeforeNetworkLoss = true
-                    // Save position NOW at the moment of disconnect
-                    savedPositionMs = currentPositionMs
-                    savedDurationMs = currentDurationMs
-                    Log.i(TAG, "Saved position: ${savedPositionMs}ms / ${savedDurationMs}ms")
+                    checkIfPhoneIsActivePlayer { isPhonePlayer ->
+                        if (isPhonePlayer) {
+                            Log.i(TAG, "Phone was playing - will auto-resume on reconnect")
+                            wasPlayingBeforeNetworkLoss = true
+                            savedPositionMs = currentPositionMs
+                            savedDurationMs = currentDurationMs
+                            Log.i(TAG, "Saved position: ${savedPositionMs}ms / ${savedDurationMs}ms")
+                        } else {
+                            Log.i(TAG, "External speaker selected - skipping auto-resume")
+                        }
+                    }
                 }
-                // Note: We don't cancel the timeout here - let it expire and trigger play()
-                // The reconnect will send server/hello which may reset the timeout
             }
         }
 
@@ -1655,6 +1491,23 @@ class MainActivity : AppCompatActivity(),
                 updatePlaybackState(currentState, positionMs)
             }
         }
+
+        @JavascriptInterface
+        fun onPlayerSelected(playerId: String, playerName: String) {
+            Log.i(TAG, "========================================")
+            Log.i(TAG, "PLAYER SELECTED: $playerName")
+            Log.i(TAG, "Player ID: $playerId")
+            Log.i(TAG, "========================================")
+
+            runOnUiThread {
+                // Store selected player info
+                selectedPlayerId = playerId
+                selectedPlayerName = playerName
+
+                // Show toast
+                Toast.makeText(this@MainActivity, "Controlling: $playerName", Toast.LENGTH_SHORT).show()
+            }
+        }
     }
 
     override fun onDestroy() {
@@ -1691,8 +1544,6 @@ class MainActivity : AppCompatActivity(),
 
         mediaSession?.release()
         mediaSession = null
-
-        musicAssistantBridge?.reset()
 
         Log.d(TAG, "Media components cleaned up")
     }
