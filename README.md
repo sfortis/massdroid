@@ -45,6 +45,7 @@ You can access Music Assistant from any browser, but a native Android app offers
 - **Color Accent Customization** – Choose your preferred accent color for the UI.
 - **mTLS Support** – Client certificate authentication for secure server connections.
 - **Configurable Server URL** – Connect to any Music Assistant server.
+- **Check for Updates** – Automatic update checking with in-app download and install.
 
 ## Screenshots
 
@@ -135,7 +136,8 @@ Access settings from the navigation drawer (hamburger menu):
 | **Auto-play on Bluetooth** | Resume playback when Bluetooth audio connects |
 | **Auto-resume on Network** | Resume after WiFi/mobile data switch |
 | **Accent Color** | Customize the app's accent color |
-| **Client Certificate** | Import PKCS#12 certificate for mTLS authentication |
+| **Clear Certificate & Cache** | Reset saved client certificate and WebView cache |
+| **Check for Updates** | Manually check for new versions on GitHub |
 
 ## Permissions
 
@@ -145,6 +147,7 @@ Access settings from the navigation drawer (hamburger menu):
 | `BLUETOOTH_CONNECT` | Detect Bluetooth audio connections |
 | `FOREGROUND_SERVICE` | Keep playing music in background |
 | `POST_NOTIFICATIONS` | Show media notification with controls |
+| `REQUEST_INSTALL_PACKAGES` | Install app updates from GitHub |
 
 ## Troubleshooting
 
@@ -159,6 +162,10 @@ Access settings from the navigation drawer (hamburger menu):
 **Bluetooth auto-play not working?**
 - Enable "Auto-play on Bluetooth" in settings
 - Grant Bluetooth permissions when prompted
+
+**Certificate issues after renewal?**
+- Go to Settings → Advanced → Clear Certificate & Cache
+- Restart the app and select the new certificate when prompted
 
 ## Contributing
 

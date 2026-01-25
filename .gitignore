@@ -103,4 +103,6 @@ utils/
 # Debug utilities (local only)
 app/src/main/java/net/asksakis/massdroid/SendSpinDebug.kt
 
-*.md
+*.mdCLAUDE.md
+DEBUGGING_NOTES.md
+WEBSOCKET_PROTOCOL.md
