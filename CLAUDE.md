@@ -8,8 +8,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - Android MediaSession integration for Bluetooth/lock screen controls
 - Media notification with playback controls and album art
 - Progress bar with seek support
-- Auto-play on Bluetooth connection
-- Auto-resume on network change
+- Auto-play on Bluetooth audio connection
+- Auto-stop on Bluetooth audio disconnection
+- Auto-resume on network change (with retry + WebView reload strategy)
 
 The app uses the **WebView's built-in SendSpin client** for audio playback. The PWA handles the SendSpin WebSocket connection and audio streaming. Android intercepts `navigator.mediaSession` updates via JavaScript injection to sync metadata and playback state with the native MediaSession.
 
@@ -50,10 +51,20 @@ The app uses the **WebView's built-in SendSpin client** for audio playback. The 
 | `PreferencesHelper.kt` | SharedPreferences wrapper for settings |
 | `SettingsActivity.kt` | Settings screen with PreferenceFragment |
 
+### JavaScript Files (`app/src/main/assets/js/`)
+
+| File | Purpose |
+|------|---------|
+| `inject.js` | Entry point, loads other scripts in correct order |
+| `ma-websocket.js` | Music Assistant WebSocket manager for API commands (play/stop/seek) |
+| `mediasession-polyfill.js` | Intercepts `navigator.mediaSession` and forwards to Android |
+| `player-selection-observer.js` | Tracks user's selected player in MA UI |
+| `ws-interceptor.js` | Intercepts WebSocket connections, tracks SendSpin state for auto-resume |
+
 ## Build & Development
 
 ### Prerequisites
-- Android SDK (API 34)
+- Android SDK (API 35)
 - Kotlin 1.9+
 - Gradle 8.x
 
@@ -87,7 +98,7 @@ The app uses the **WebView's built-in SendSpin client** for audio playback. The 
 
 - **Language**: Kotlin
 - **Min SDK**: 26 (Android 8.0)
-- **Target SDK**: 34 (Android 14)
+- **Target SDK**: 35 (Android 15)
 - **Architecture**: Single Activity with WebView
 
 ## Release Workflow

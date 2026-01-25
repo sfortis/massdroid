@@ -10,7 +10,9 @@ import android.content.pm.ServiceInfo
 import android.graphics.Bitmap
 import android.os.Binder
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import android.support.v4.media.session.MediaSessionCompat
 import android.util.Log
 import androidx.core.app.NotificationCompat
@@ -36,6 +38,9 @@ class AudioService : Service() {
         private const val ACTION_PLAY_PAUSE = "net.asksakis.massdroid.ACTION_PLAY_PAUSE"
         private const val ACTION_PREVIOUS = "net.asksakis.massdroid.ACTION_PREVIOUS"
         private const val ACTION_NEXT = "net.asksakis.massdroid.ACTION_NEXT"
+
+        // Debounce delay for notification updates (ms)
+        private const val NOTIFICATION_DEBOUNCE_MS = 150L
     }
 
     // Current metadata state
@@ -50,6 +55,14 @@ class AudioService : Service() {
 
     // Current artwork bitmap (set via setArtworkBitmap from MainActivity)
     private var currentArtwork: Bitmap? = null
+
+    // Debounce handler for notification updates
+    private val notificationHandler = Handler(Looper.getMainLooper())
+    private var pendingNotificationUpdate = false
+    private val notificationUpdateRunnable = Runnable {
+        pendingNotificationUpdate = false
+        doUpdateNotification()
+    }
 
     // MediaSession for lock screen controls
     private var mediaSession: MediaSessionCompat? = null
@@ -287,14 +300,26 @@ class AudioService : Service() {
     }
 
     /**
-     * Update the notification with current state
+     * Schedule a debounced notification update.
+     * Multiple rapid calls will be coalesced into a single update after NOTIFICATION_DEBOUNCE_MS.
      */
     private fun updateNotification() {
+        if (!pendingNotificationUpdate) {
+            pendingNotificationUpdate = true
+            notificationHandler.postDelayed(notificationUpdateRunnable, NOTIFICATION_DEBOUNCE_MS)
+        }
+        // If already pending, the scheduled update will pick up the latest state
+    }
+
+    /**
+     * Actually update the notification (called after debounce delay)
+     */
+    private fun doUpdateNotification() {
         val notification = buildNotification()
 
         val manager = getSystemService(NotificationManager::class.java)
         manager?.notify(NOTIFICATION_ID, notification)
-        Log.d(TAG, "Notification updated")
+        Log.d(TAG, "Notification updated (debounced)")
     }
 
     /**
@@ -401,6 +426,8 @@ class AudioService : Service() {
 
     override fun onDestroy() {
         Log.d(TAG, "AudioService onDestroy called")
+        // Cancel any pending debounced updates
+        notificationHandler.removeCallbacks(notificationUpdateRunnable)
         currentArtwork = null
         super.onDestroy()
     }

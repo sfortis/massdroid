@@ -47,20 +47,21 @@
     };
 
     /**
-     * Check if this player (phone/SendSpin) is the selected player.
-     * If another player is selected, we should NOT forward our updates.
+     * Check if we should forward updates to Android.
+     *
+     * IMPORTANT: When MaWebSocket is connected, IT is the single source of truth
+     * for Android updates. This polyfill should NOT forward anything to avoid duplicates.
+     *
+     * This polyfill only forwards when MaWebSocket is NOT available (fallback).
      */
-    function isThisPlayerSelected() {
-        if (!window.MaWebSocket || !window.MaWebSocket._selectedPlayerId) {
-            // No selection yet, allow updates
-            return true;
+    function shouldForwardToAndroid() {
+        // If MaWebSocket is connected, it handles all Android updates
+        if (window.MaWebSocket && window.MaWebSocket.isConnected && window.MaWebSocket.isConnected()) {
+            return false;
         }
 
-        const selectedId = window.MaWebSocket._selectedPlayerId;
-        const phoneId = localStorage.getItem('sendspin_webplayer_id');
-
-        // Allow if phone is selected OR if we can't determine phone ID
-        return !phoneId || selectedId === phoneId;
+        // MaWebSocket not available - this polyfill is the fallback
+        return true;
     }
 
     // ============================================
@@ -130,9 +131,9 @@
 
     // Debounced metadata update
     const debouncedMetadataUpdate = debounce((title, artist, album, artwork, duration) => {
-        // Only forward if this player (phone) is selected
-        if (!isThisPlayerSelected()) {
-            console.log('[MediaSession] Skipping metadata - different player selected');
+        // Only forward if MaWebSocket is not handling updates
+        if (!shouldForwardToAndroid()) {
+            // MaWebSocket is connected and is the single source of truth
             return;
         }
 
@@ -183,9 +184,9 @@
 
     // Debounced playback state update
     const debouncedPlaybackUpdate = debounce((state, position) => {
-        // Only forward if this player (phone) is selected
-        if (!isThisPlayerSelected()) {
-            console.log('[MediaSession] Skipping playback state - different player selected');
+        // Only forward if MaWebSocket is not handling updates
+        if (!shouldForwardToAndroid()) {
+            // MaWebSocket is connected and is the single source of truth
             return;
         }
 

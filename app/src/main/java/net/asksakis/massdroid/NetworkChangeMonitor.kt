@@ -10,9 +10,12 @@ import android.util.Log
 /**
  * Monitors network connectivity changes and notifies when network is lost/restored.
  * Used to auto-resume playback after network reconnection.
+ *
+ * Note: Uses applicationContext internally to avoid holding reference to Activity,
+ * preventing potential memory leaks if Activity is destroyed while monitor is active.
  */
 class NetworkChangeMonitor(
-    private val context: Context,
+    context: Context,  // Not stored as field - only used to get applicationContext
     private val listener: NetworkChangeListener
 ) {
     companion object {
@@ -24,7 +27,9 @@ class NetworkChangeMonitor(
         fun onNetworkAvailable()
     }
 
-    private val connectivityManager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+    // Use applicationContext to avoid Activity memory leaks
+    private val connectivityManager = context.applicationContext
+        .getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
     private var isRegistered = false
     private var lastNetworkState: Boolean? = null
 

@@ -47,4 +47,8 @@
         }
     }, 100);
 
+    // Auto-resume is now handled entirely via triggerPlay() in MainActivity.kt
+    // which sets window._massdroidWaitingForReady flag, and ws-interceptor.js
+    // watches for queue_updated events to trigger playback. No page reload needed!
+
 })();

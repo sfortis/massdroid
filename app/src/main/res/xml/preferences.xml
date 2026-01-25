@@ -49,4 +49,36 @@
 
     </PreferenceCategory>
 
+    <PreferenceCategory
+        android:title="@string/settings_advanced"
+        app:iconSpaceReserved="false">
+
+        <Preference
+            android:key="clear_certificate"
+            android:title="@string/settings_clear_certificate"
+            android:summary="@string/settings_clear_certificate_summary"
+            app:iconSpaceReserved="false" />
+
+    </PreferenceCategory>
+
+    <PreferenceCategory
+        android:title="@string/settings_about"
+        app:iconSpaceReserved="false">
+
+        <Preference
+            android:key="app_version"
+            android:title="@string/settings_app_version"
+            android:summary=""
+            android:enabled="false"
+            android:selectable="false"
+            app:iconSpaceReserved="false" />
+
+        <Preference
+            android:key="check_updates"
+            android:title="@string/settings_check_updates"
+            android:summary="@string/settings_check_updates_summary"
+            app:iconSpaceReserved="false" />
+
+    </PreferenceCategory>
+
 </PreferenceScreen>

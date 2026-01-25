@@ -36,6 +36,13 @@
     <string name="settings_general">General</string>
     <string name="settings_appearance">Appearance</string>
     <string name="settings_color_accent_title">Color Accent</string>
+    <string name="settings_advanced">Advanced</string>
+    <string name="settings_clear_certificate">Clear Certificate &amp; Cache</string>
+    <string name="settings_clear_certificate_summary">Clear saved client certificate and WebView cache</string>
+    <string name="settings_about">About</string>
+    <string name="settings_app_version">App Version</string>
+    <string name="settings_check_updates">Check for Updates</string>
+    <string name="settings_check_updates_summary">Check for new versions of the app</string>
 
     <!-- Battery Optimization -->
     <string name="battery_optimization_title">Disable Battery Optimization</string>

@@ -27,6 +27,89 @@
     // Store original WebSocket constructor
     const OriginalWebSocket = window.WebSocket;
 
+    // Track SendSpin connection status
+    let _sendspinConnected = false;
+    let _sendspinSocket = null;
+
+    // Track stabilization for auto-resume
+    let _lastConnectionChange = 0;
+    let _connectionChangeCount = 0;
+    let _stabilizationTimer = null;
+    let _isStabilized = false;
+    let _serverPlaybackState = null;  // Track what server thinks (from group/update)
+
+    // Constants
+    const STABILIZATION_DELAY_MS = 2500;  // Wait 2.5s after last connect/disconnect
+
+    // Expose function to check SendSpin connection status
+    window.isSendspinConnected = function() {
+        return _sendspinConnected && _sendspinSocket && _sendspinSocket.readyState === WebSocket.OPEN;
+    };
+
+    // Expose function to check if player is stabilized and ready
+    window.isSendspinStabilized = function() {
+        return _isStabilized && _sendspinConnected;
+    };
+
+    // Expose function to get server's believed playback state
+    window.getSendspinPlaybackState = function() {
+        return _serverPlaybackState;
+    };
+
+    // Expose function to force close SendSpin WebSocket (for network change cleanup)
+    window.closeSendspinSocket = function() {
+        console.log('[SS-DEBUG] Force closing SendSpin socket');
+        if (_sendspinSocket) {
+            try {
+                _sendspinSocket.close(1000, 'Network lost');
+            } catch (e) {
+                console.log('[SS-DEBUG] Error closing socket:', e);
+            }
+        }
+        _sendspinConnected = false;
+        _isStabilized = false;
+        _serverPlaybackState = null;
+        // Clear any pending stabilization timer
+        if (_stabilizationTimer) {
+            clearTimeout(_stabilizationTimer);
+            _stabilizationTimer = null;
+        }
+    };
+
+    // Internal function to handle connection state changes
+    function onConnectionStateChange(event, details) {
+        _lastConnectionChange = Date.now();
+        _connectionChangeCount++;
+        _isStabilized = false;
+
+        console.log('[SS-DEBUG] Connection state change #' + _connectionChangeCount + ': ' + event);
+
+        // Clear any pending stabilization timer
+        if (_stabilizationTimer) {
+            clearTimeout(_stabilizationTimer);
+            _stabilizationTimer = null;
+        }
+
+        // Start new stabilization timer
+        _stabilizationTimer = setTimeout(function() {
+            const timeSinceChange = Date.now() - _lastConnectionChange;
+            if (timeSinceChange >= STABILIZATION_DELAY_MS - 100) {
+                _isStabilized = true;
+                console.log('[SS-DEBUG] ====== CONNECTION STABILIZED ======');
+                console.log('[SS-DEBUG] Total connection changes: ' + _connectionChangeCount);
+                console.log('[SS-DEBUG] Server playback_state: ' + _serverPlaybackState);
+
+                // Notify Android that we're stabilized
+                if (window.AndroidMediaSession && window.AndroidMediaSession.onSendspinStabilized) {
+                    window.AndroidMediaSession.onSendspinStabilized(
+                        _sendspinConnected,
+                        _serverPlaybackState || 'unknown'
+                    );
+                }
+            }
+        }, STABILIZATION_DELAY_MS);
+    }
+
     // ============================================
     // LOGGING HELPER
     // ============================================
@@ -96,29 +179,60 @@
         // ============================================
 
         if (conn.isSendspin) {
+            // CRITICAL: Reset flag when a NEW SendSpin WebSocket is created
+            console.log('[SS-DEBUG] ====== NEW SENDSPIN WEBSOCKET ======');
+            console.log('[SS-DEBUG] URL:', urlStr);
+            _sendspinConnected = false;
+            _sendspinSocket = ws;
+
+            ws.addEventListener('open', function() {
+                console.log('[SS-DEBUG] ====== WEBSOCKET OPENED ======');
+                _sendspinConnected = true;
+                _serverPlaybackState = null;  // Reset until we get group/update
+                onConnectionStateChange('OPEN', {});
+                if (window.AndroidMediaSession && window.AndroidMediaSession.onSendspinConnected) {
+                    window.AndroidMediaSession.onSendspinConnected();
+                }
+            });
+
             ws.addEventListener('message', function(event) {
                 try {
                     if (typeof event.data !== 'string') return;
 
                     const msg = JSON.parse(event.data);
 
-                    // server/hello = control connection ready
+                    // Verbose logging for all SendSpin messages
                     if (msg.type === 'server/hello') {
-                        console.log('[WSInterceptor] SendSpin connected');
-                        if (window.AndroidMediaSession && window.AndroidMediaSession.onSendspinConnected) {
-                            window.AndroidMediaSession.onSendspinConnected();
+                        console.log('[SS-DEBUG] ====== SERVER HELLO ======');
+                        console.log('[SS-DEBUG] Server ready, player_id available');
+                    }
+
+                    if (msg.type === 'auth_ok') {
+                        console.log('[SS-DEBUG] ====== AUTH OK ======');
+                    }
+
+                    if (msg.type === 'group/update') {
+                        console.log('[SS-DEBUG] ====== GROUP UPDATE ======');
+                        console.log('[SS-DEBUG] playback_state:', msg.payload?.playback_state);
+                        // Track server's believed state
+                        if (msg.payload?.playback_state) {
+                            _serverPlaybackState = msg.payload.playback_state;
                         }
                     }
 
-                    // stream/start = audio streaming started
                     if (msg.type === 'stream/start') {
-                        console.log('[WSInterceptor] SendSpin stream started');
+                        console.log('[SS-DEBUG] ====== STREAM START - READY TO PLAY! ======');
+                        console.log('[SS-DEBUG] codec:', msg.payload?.player?.codec);
                         if (window.AndroidMediaSession && window.AndroidMediaSession.onSendspinStreamStart) {
                             window.AndroidMediaSession.onSendspinStreamStart();
                         }
                     }
 
-                    // Log message (skip noisy time sync)
+                    if (msg.type === 'stream/stop') {
+                        console.log('[SS-DEBUG] ====== STREAM STOP ======');
+                    }
+
+                    // Log all messages except time sync
                     if (msg.type !== 'server/time') {
                         logToAndroid('SENDSPIN', msg.type || 'unknown', msg);
                     }
@@ -127,13 +241,21 @@
             });
 
             ws.addEventListener('close', function(event) {
-                console.log('[WSInterceptor] SendSpin disconnected:', event.code);
+                console.log('[SS-DEBUG] ====== WEBSOCKET CLOSED ======');
+                console.log('[SS-DEBUG] code:', event.code, 'reason:', event.reason || 'none');
+                _sendspinConnected = false;
+                _isStabilized = false;
+                onConnectionStateChange('CLOSE', { code: event.code, reason: event.reason });
                 if (window.AndroidMediaSession && window.AndroidMediaSession.logWsDisconnection) {
                     window.AndroidMediaSession.logWsDisconnection('SENDSPIN', event.code, event.reason || '');
                 }
                 if (window.AndroidMediaSession && window.AndroidMediaSession.onSendspinDisconnected) {
                     window.AndroidMediaSession.onSendspinDisconnected();
                 }
+            });
+
+            ws.addEventListener('error', function(event) {
+                console.log('[SS-DEBUG] ====== WEBSOCKET ERROR ======');
             });
         }
 
@@ -151,22 +273,40 @@
                 // Skip noisy messages
                 if (msgType === 'server/time') return;
 
-                // Track selected player from queue_updated events (active: true)
-                if (conn.isMainApi && msg.event === 'queue_updated' && msg.data) {
-                    const queue = msg.data;
-                    if (queue.active === true && queue.queue_id) {
-                        if (window.MaWebSocket) {
-                            window.MaWebSocket.setSelectedPlayer(queue.queue_id, queue.display_name);
-                        }
-                    }
-                }
+                // NOTE: Do NOT auto-select player from queue_updated events!
+                // Player selection is ONLY done via player-selection-observer.js when
+                // user explicitly selects a player in the MA UI. This prevents the
+                // notification from jumping to other players when they become active.
 
-                // Also track currently playing player from player_updated events
+                // Track currently playing player from player_updated events (for fallback only)
                 if (conn.isMainApi && msg.event === 'player_updated' && msg.data) {
                     const player = msg.data;
                     if (player.playback_state === 'playing' && player.player_id) {
                         if (window.MaWebSocket) {
                             window.MaWebSocket.setCurrentlyPlaying(player.player_id);
+                        }
+                    }
+                }
+
+                // PHONE PLAYER AVAILABLE: Log when phone player becomes available via API WebSocket
+                // NOTE: We do NOT trigger onSendspinConnected from API events anymore!
+                // The API shows available=true before SendSpin audio stream is ready.
+                // We only trigger from SendSpin WebSocket 'open' event for reliable timing.
+                if (conn.isMainApi && (msg.event === 'player_added' || msg.event === 'player_updated') && msg.data) {
+                    const player = msg.data;
+                    const phonePlayerId = localStorage.getItem('sendspin_webplayer_id');
+
+                    // Just log, don't trigger - wait for SendSpin WebSocket open instead
+                    if (phonePlayerId && player.player_id === phonePlayerId && player.available === true) {
+                        console.log('[WSInterceptor] Phone player available via API: ' + player.player_id + ' (waiting for WebSocket)');
+                    }
+
+                    // Track when phone player becomes unavailable
+                    if (phonePlayerId && player.player_id === phonePlayerId && player.available === false) {
+                        console.log('[WSInterceptor] Phone player unavailable via API: ' + player.player_id);
+                        if (_sendspinConnected) {
+                            _sendspinConnected = false;
+                            // Note: Don't call onSendspinDisconnected here - let the WebSocket close handle it
                         }
                     }
                 }

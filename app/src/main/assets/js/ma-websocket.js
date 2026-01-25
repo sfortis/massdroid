@@ -205,6 +205,13 @@
 
         _fetchArtwork: function(url) {
             if (!url) return;
+
+            // Skip if artwork URL hasn't changed (avoid redundant 67KB fetches)
+            if (url === this._lastArtworkUrl) {
+                return;
+            }
+            this._lastArtworkUrl = url;
+
             const self = this;
 
             // Rewrite URL to match configured origin (handles reverse proxy scenarios)
@@ -246,6 +253,8 @@
         // Track selected player (from queue_updated with active: true)
         _selectedPlayerId: null,
         _selectedPlayerName: null,
+        // Cache last artwork URL to avoid redundant fetches
+        _lastArtworkUrl: null,
 
         /**
          * Set the selected player (called when user selects a player in MA UI)
@@ -260,6 +269,8 @@
                 });
                 this._selectedPlayerId = playerId;
                 this._selectedPlayerName = playerName;
+                // Clear artwork cache so new player's artwork gets fetched
+                this._lastArtworkUrl = null;
 
                 // Notify Android of player selection
                 if (window.AndroidMediaSession && window.AndroidMediaSession.onPlayerSelected) {
