@@ -147,6 +147,8 @@ class MainActivity : AppCompatActivity(),
     internal var wasPlayingBeforeNetworkLoss = false
     internal var savedPositionMs: Long = 0  // Position saved at moment of network loss
     internal var savedDurationMs: Long = 0  // Duration saved at moment of network loss
+    internal var currentTrackTitle: String = ""  // Current track title for verification
+    internal var savedTrackTitle: String = ""  // Track title saved at moment of network loss
     @Volatile
     internal var waitingForStreamStart = false  // True while waiting for auto-resume to complete
 
@@ -175,9 +177,7 @@ class MainActivity : AppCompatActivity(),
 
     companion object {
         private const val TAG = "MainActivity"
-        private const val BLUETOOTH_PERMISSION_REQUEST = 100
-        private const val NOTIFICATION_PERMISSION_REQUEST = 101
-        private const val PHONE_STATE_PERMISSION_REQUEST = 102
+        private const val PERMISSIONS_REQUEST = 100  // Combined permissions request
     }
 
     // AudioService connection
@@ -289,7 +289,6 @@ class MainActivity : AppCompatActivity(),
 
         // Initialize telephony manager for phone call detection
         telephonyManager = getSystemService(Context.TELEPHONY_SERVICE) as TelephonyManager
-        setupPhoneCallListener()
 
         // Setup views
         setupViews()
@@ -302,8 +301,8 @@ class MainActivity : AppCompatActivity(),
         onBackPressedDispatcher.addCallback(this, webViewBackCallback)
         onBackPressedDispatcher.addCallback(this, drawerBackCallback)
 
-        // Check notification permission for Android 13+
-        checkNotificationPermission()
+        // Request all required permissions at once (avoids race condition with multiple dialogs)
+        requestRequiredPermissions()
 
         // Setup media components
         setupMediaSession()
@@ -311,9 +310,6 @@ class MainActivity : AppCompatActivity(),
 
         // Apply settings
         applyKeepScreenOnSetting()
-
-        // Setup Bluetooth auto-play
-        setupBluetoothAutoPlay()
 
         // Setup network change monitor
         setupNetworkMonitor()
@@ -374,7 +370,8 @@ class MainActivity : AppCompatActivity(),
                     wasPlayingBeforeNetworkLoss = true
                     savedPositionMs = currentPositionMs
                     savedDurationMs = currentDurationMs
-                    Log.i(TAG, "Saved state for auto-resume: position=${savedPositionMs}ms, duration=${savedDurationMs}ms")
+                    savedTrackTitle = currentTrackTitle
+                    Log.i(TAG, "Saved state for auto-resume: position=${savedPositionMs}ms, duration=${savedDurationMs}ms, track=$savedTrackTitle")
                 }
 
                 // Force close WebSockets to ensure clean reconnection when network returns
@@ -550,6 +547,31 @@ class MainActivity : AppCompatActivity(),
                     })();
                 """.trimIndent()) { playResult ->
                     Log.i(TAG, "Fallback play result: $playResult")
+
+                    // Seek to saved position after play starts (only if same track)
+                    val savedPosSec = savedPositionMs / 1000
+                    if (savedPosSec > 5 && savedTrackTitle.isNotEmpty()) {
+                        handler.postDelayed({
+                            // Verify track hasn't changed before seeking
+                            if (currentTrackTitle == savedTrackTitle) {
+                                Log.i(TAG, "Fallback: Same track confirmed, seeking to saved position: ${savedPosSec}s")
+                                webView.evaluateJavascript("""
+                                    (function() {
+                                        if (window.MaWebSocket && window.MaWebSocket.isConnected()) {
+                                            console.log('[FallbackResume] Seeking to $savedPosSec seconds');
+                                            window.MaWebSocket.seek($savedPosSec);
+                                            return 'seek_sent';
+                                        }
+                                        return 'not_connected';
+                                    })();
+                                """.trimIndent()) { seekResult ->
+                                    Log.i(TAG, "Fallback seek result: $seekResult")
+                                }
+                            } else {
+                                Log.i(TAG, "Fallback: Track changed (was: $savedTrackTitle, now: $currentTrackTitle) - skipping seek")
+                            }
+                        }, 1000)  // Wait 1s for play to start before seeking
+                    }
                 }
             }, 500)  // Wait 500ms after stop before play
         }
@@ -588,40 +610,64 @@ class MainActivity : AppCompatActivity(),
     }
 
     /**
-     * Check and request POST_NOTIFICATIONS permission for Android 13+ (API 33+)
-     * Required for foreground service notifications to be visible.
+     * Request all required runtime permissions at once.
+     * This avoids race conditions where multiple permission dialogs would interfere.
      */
-    private fun checkNotificationPermission() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
-                != PackageManager.PERMISSION_GRANTED) {
-                Log.i(TAG, "Requesting POST_NOTIFICATIONS permission")
-                ActivityCompat.requestPermissions(
-                    this,
-                    arrayOf(Manifest.permission.POST_NOTIFICATIONS),
-                    NOTIFICATION_PERMISSION_REQUEST
-                )
-            } else {
-                Log.d(TAG, "POST_NOTIFICATIONS permission already granted")
-            }
-        }
-    }
+    private fun requestRequiredPermissions() {
+        val permissionsNeeded = mutableListOf<String>()
 
-    private fun setupBluetoothAutoPlay() {
-        // Request Bluetooth permission on Android 12+
+        // Android 12+ (API 31): Bluetooth permission for auto-play on connect
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             if (ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT)
                 != PackageManager.PERMISSION_GRANTED) {
-                ActivityCompat.requestPermissions(
-                    this,
-                    arrayOf(Manifest.permission.BLUETOOTH_CONNECT),
-                    BLUETOOTH_PERMISSION_REQUEST
-                )
-                return
+                permissionsNeeded.add(Manifest.permission.BLUETOOTH_CONNECT)
             }
         }
 
-        registerBluetoothReceiver()
+        // Android 13+ (API 33): Notification permission for foreground service
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
+                != PackageManager.PERMISSION_GRANTED) {
+                permissionsNeeded.add(Manifest.permission.POST_NOTIFICATIONS)
+            }
+        }
+
+        // Phone state permission for pausing during calls
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_PHONE_STATE)
+            != PackageManager.PERMISSION_GRANTED) {
+            permissionsNeeded.add(Manifest.permission.READ_PHONE_STATE)
+        }
+
+        if (permissionsNeeded.isNotEmpty()) {
+            Log.i(TAG, "Requesting permissions: ${permissionsNeeded.joinToString()}")
+            ActivityCompat.requestPermissions(
+                this,
+                permissionsNeeded.toTypedArray(),
+                PERMISSIONS_REQUEST
+            )
+        } else {
+            Log.d(TAG, "All permissions already granted")
+            setupPermissionDependentFeatures()
+        }
+    }
+
+    /**
+     * Setup features that depend on runtime permissions.
+     * Called after permissions are granted.
+     */
+    private fun setupPermissionDependentFeatures() {
+        // Setup Bluetooth auto-play (needs BLUETOOTH_CONNECT)
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S ||
+            ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT)
+                == PackageManager.PERMISSION_GRANTED) {
+            registerBluetoothReceiver()
+        }
+
+        // Setup phone call listener (needs READ_PHONE_STATE)
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_PHONE_STATE)
+            == PackageManager.PERMISSION_GRANTED) {
+            registerPhoneCallListener()
+        }
     }
 
     private fun registerBluetoothReceiver() {
@@ -661,20 +707,27 @@ class MainActivity : AppCompatActivity(),
                     return@BluetoothAutoPlayReceiver
                 }
 
-                Log.i(TAG, "Stopping playback due to Bluetooth disconnect")
-                runOnUiThread {
-                    Toast.makeText(this, "Bluetooth disconnected - stopping playback", Toast.LENGTH_SHORT).show()
-                    webView.evaluateJavascript("""
-                        (function() {
-                            if (window.MaWebSocket && window.MaWebSocket.isConnected()) {
-                                console.log('[BluetoothDisconnect] Sending stop command');
-                                window.MaWebSocket.stop();
-                                return 'stopped';
+                // Only stop if phone speaker is selected (don't stop external speakers like Sonos)
+                checkIfPhoneIsActivePlayer { isPhoneSelected ->
+                    if (isPhoneSelected) {
+                        Log.i(TAG, "Phone selected, stopping playback due to Bluetooth disconnect")
+                        runOnUiThread {
+                            Toast.makeText(this, "Bluetooth disconnected - stopping playback", Toast.LENGTH_SHORT).show()
+                            webView.evaluateJavascript("""
+                                (function() {
+                                    if (window.MaWebSocket && window.MaWebSocket.isConnected()) {
+                                        console.log('[BluetoothDisconnect] Sending stop command');
+                                        window.MaWebSocket.stop();
+                                        return 'stopped';
+                                    }
+                                    return 'not_connected';
+                                })();
+                            """.trimIndent()) { result ->
+                                Log.i(TAG, "BT disconnect stop result: $result")
                             }
-                            return 'not_connected';
-                        })();
-                    """.trimIndent()) { result ->
-                        Log.i(TAG, "BT disconnect stop result: $result")
+                        }
+                    } else {
+                        Log.i(TAG, "Phone not selected - ignoring BT disconnect (external speaker in use)")
                     }
                 }
             }
@@ -695,24 +748,20 @@ class MainActivity : AppCompatActivity(),
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
 
-        if (requestCode == BLUETOOTH_PERMISSION_REQUEST) {
-            if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-                Log.i(TAG, "Bluetooth permission granted")
-                registerBluetoothReceiver()
-            } else {
-                Log.w(TAG, "Bluetooth permission denied - auto-play won't work")
-                Toast.makeText(this, "Bluetooth permission required for auto-play", Toast.LENGTH_LONG).show()
+        if (requestCode == PERMISSIONS_REQUEST) {
+            // Log results for each permission
+            permissions.forEachIndexed { index, permission ->
+                val granted = grantResults.getOrNull(index) == PackageManager.PERMISSION_GRANTED
+                val shortName = permission.substringAfterLast('.')
+                if (granted) {
+                    Log.i(TAG, "Permission granted: $shortName")
+                } else {
+                    Log.w(TAG, "Permission denied: $shortName")
+                }
             }
-        }
 
-        if (requestCode == PHONE_STATE_PERMISSION_REQUEST) {
-            if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-                Log.i(TAG, "Phone state permission granted")
-                registerPhoneCallListener()
-            } else {
-                Log.w(TAG, "Phone state permission denied - music won't pause during calls")
-                Toast.makeText(this, "Phone permission needed to pause music during calls", Toast.LENGTH_LONG).show()
-            }
+            // Setup features based on granted permissions
+            setupPermissionDependentFeatures()
         }
     }
 
@@ -1353,15 +1402,30 @@ class MainActivity : AppCompatActivity(),
             Log.d(TAG, "Bluetooth audio check #$attempts: A2DP=$isBluetoothA2dpOn, SCO=$isBluetoothScoOn")
 
             if (isBluetoothA2dpOn || isBluetoothScoOn) {
-                Log.i(TAG, "Bluetooth audio ready, starting playback on: $deviceName")
-                executeMediaCommand("play")
-                Toast.makeText(this, "Auto-playing: $deviceName", Toast.LENGTH_SHORT).show()
+                Log.i(TAG, "Bluetooth audio ready, checking if phone speaker is selected...")
+                // Only auto-play if phone speaker is selected
+                checkIfPhoneIsActivePlayer { isPhoneSelected ->
+                    if (isPhoneSelected) {
+                        Log.i(TAG, "Phone selected, starting playback on: $deviceName")
+                        executeMediaCommand("play")
+                        Toast.makeText(this, "Auto-playing: $deviceName", Toast.LENGTH_SHORT).show()
+                    } else {
+                        Log.i(TAG, "Phone not selected - skipping Bluetooth auto-play (external speaker in use)")
+                    }
+                }
             } else if (attempts < maxAttempts) {
                 handler.postDelayed({ checkAndPlay() }, 500)
             } else {
-                Log.w(TAG, "Bluetooth audio not ready after ${maxAttempts * 500}ms, playing anyway")
-                executeMediaCommand("play")
-                Toast.makeText(this, "Auto-playing: $deviceName", Toast.LENGTH_SHORT).show()
+                Log.w(TAG, "Bluetooth audio not ready after ${maxAttempts * 500}ms, checking phone selection...")
+                checkIfPhoneIsActivePlayer { isPhoneSelected ->
+                    if (isPhoneSelected) {
+                        Log.i(TAG, "Phone selected, playing anyway on: $deviceName")
+                        executeMediaCommand("play")
+                        Toast.makeText(this, "Auto-playing: $deviceName", Toast.LENGTH_SHORT).show()
+                    } else {
+                        Log.i(TAG, "Phone not selected - skipping Bluetooth auto-play")
+                    }
+                }
             }
         }
 
@@ -1654,27 +1718,8 @@ class MainActivity : AppCompatActivity(),
     }
 
     /**
-     * Setup phone call listener to pause music during calls.
-     * Requires READ_PHONE_STATE permission on Android 12+.
-     */
-    private fun setupPhoneCallListener() {
-        // Check if we have the permission
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_PHONE_STATE)
-            != PackageManager.PERMISSION_GRANTED) {
-            Log.i(TAG, "Requesting READ_PHONE_STATE permission for call detection")
-            ActivityCompat.requestPermissions(
-                this,
-                arrayOf(Manifest.permission.READ_PHONE_STATE),
-                PHONE_STATE_PERMISSION_REQUEST
-            )
-            return
-        }
-
-        registerPhoneCallListener()
-    }
-
-    /**
-     * Actually register the phone call listener (called after permission granted).
+     * Register the phone call listener to pause music during calls.
+     * Called after READ_PHONE_STATE permission is granted.
      */
     private fun registerPhoneCallListener() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -1787,6 +1832,9 @@ class MainActivity : AppCompatActivity(),
         applyKeepScreenOnSetting()
         // Update drawer header with current URL
         updateDrawerHeader()
+
+        // Check if WebSocket connection is lost and reload if needed
+        checkAndReconnectIfNeeded()
 
         // Check if color changed - need to recreate activity
         if (colorBeforePause.isNotEmpty()) {
@@ -1946,6 +1994,31 @@ class MainActivity : AppCompatActivity(),
     }
 
     /**
+     * Check if WebSocket connection is lost and reload if needed.
+     * Called on resume to handle stale WebView after long background.
+     */
+    private fun checkAndReconnectIfNeeded() {
+        // Delay check to allow WebView to resume first
+        handler.postDelayed({
+            webView.evaluateJavascript("""
+                (function() {
+                    if (window.MaWebSocket && window.MaWebSocket.isConnected()) {
+                        return 'connected';
+                    }
+                    return 'disconnected';
+                })();
+            """.trimIndent()) { result ->
+                val isConnected = result?.replace("\"", "") == "connected"
+                Log.d(TAG, "WebSocket connection check on resume: $result")
+                if (!isConnected) {
+                    Log.i(TAG, "WebSocket disconnected, reloading page...")
+                    webView.reload()
+                }
+            }
+        }, 500)  // Small delay to let WebView resume
+    }
+
+    /**
      * JavaScript interface for PWA to update media metadata and playback state.
      *
      * Uses WeakReference to avoid memory leaks when Activity is destroyed
@@ -2021,6 +2094,9 @@ class MainActivity : AppCompatActivity(),
                 activity.pendingTitle = title
                 activity.pendingArtist = artist
                 activity.pendingAlbum = album
+
+                // Track current title for seek verification after network reconnect
+                activity.currentTrackTitle = title
 
                 // Update AudioService notification if bound
                 if (activity.audioServiceBound && activity.audioService != null) {
@@ -2207,14 +2283,22 @@ class MainActivity : AppCompatActivity(),
                 return
             }
 
-            Log.i(TAG, "Triggering auto-resume (primary path)...")
-            activity.waitingForStreamStart = true
-            activity.autoResumeRetryCount = 0  // Reset retry counter
-            activity.primaryAutoResumeActive = true  // Stop fallback polling
+            // Check if phone speaker is selected before auto-resume
+            activity.checkIfPhoneIsActivePlayer { isPhoneSelected ->
+                if (!isPhoneSelected) {
+                    Log.i(TAG, "Phone not selected - skipping auto-resume (external speaker in use)")
+                    activity.wasPlayingBeforeNetworkLoss = false
+                    return@checkIfPhoneIsActivePlayer
+                }
 
-            activity.runOnUiThread {
-                // Show toast to indicate auto-resume is starting
-                Toast.makeText(activity, "Auto-resuming...", Toast.LENGTH_SHORT).show()
+                Log.i(TAG, "Triggering auto-resume (primary path)...")
+                activity.waitingForStreamStart = true
+                activity.autoResumeRetryCount = 0  // Reset retry counter
+                activity.primaryAutoResumeActive = true  // Stop fallback polling
+
+                activity.runOnUiThread {
+                    // Show toast to indicate auto-resume is starting
+                    Toast.makeText(activity, "Auto-resuming...", Toast.LENGTH_SHORT).show()
                 // The server thinks it's already playing, but no stream/start was sent
                 // Force a fresh stream by stopping then playing
                 activity.handler.postDelayed({
@@ -2245,6 +2329,32 @@ class MainActivity : AppCompatActivity(),
                                 })();
                             """.trimIndent()) { playResult ->
                                 Log.i(TAG, "Play command result: $playResult")
+
+                                // Seek to saved position after play starts (only if same track)
+                                val savedPosSec = activity.savedPositionMs / 1000
+                                val savedTitle = activity.savedTrackTitle
+                                if (savedPosSec > 5 && savedTitle.isNotEmpty()) {
+                                    activity.handler.postDelayed({
+                                        // Verify track hasn't changed before seeking
+                                        if (activity.currentTrackTitle == savedTitle) {
+                                            Log.i(TAG, "Same track confirmed, seeking to saved position: ${savedPosSec}s")
+                                            activity.webView.evaluateJavascript("""
+                                                (function() {
+                                                    if (window.MaWebSocket && window.MaWebSocket.isConnected()) {
+                                                        console.log('[AutoResume] Seeking to $savedPosSec seconds');
+                                                        window.MaWebSocket.seek($savedPosSec);
+                                                        return 'seek_sent';
+                                                    }
+                                                    return 'not_connected';
+                                                })();
+                                            """.trimIndent()) { seekResult ->
+                                                Log.i(TAG, "Seek command result: $seekResult")
+                                            }
+                                        } else {
+                                            Log.i(TAG, "Track changed (was: $savedTitle, now: ${activity.currentTrackTitle}) - skipping seek")
+                                        }
+                                    }, 1000)  // Wait 1s for play to start before seeking
+                                }
                             }
                         }, 500)  // Wait 500ms after stop before play
                     }
@@ -2280,6 +2390,7 @@ class MainActivity : AppCompatActivity(),
                     }
                 }
                 activity.handler.postDelayed(activity.autoResumeTimeoutRunnable!!, 5000)  // 5 second timeout
+                }
             }
         }
 

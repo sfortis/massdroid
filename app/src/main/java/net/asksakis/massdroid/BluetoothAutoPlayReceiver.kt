@@ -1,7 +1,6 @@
 package net.asksakis.massdroid
 
 import android.bluetooth.BluetoothA2dp
-import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothHeadset
 import android.bluetooth.BluetoothProfile
@@ -31,10 +30,8 @@ class BluetoothAutoPlayReceiver(
                 addAction(BluetoothA2dp.ACTION_CONNECTION_STATE_CHANGED)
                 // Headset profile - for car kits and headsets
                 addAction(BluetoothHeadset.ACTION_CONNECTION_STATE_CHANGED)
-                // Generic ACL connection (fallback)
-                addAction(BluetoothDevice.ACTION_ACL_CONNECTED)
-                // ACL disconnect for disconnect detection
-                addAction(BluetoothDevice.ACTION_ACL_DISCONNECTED)
+                // Note: ACL events removed - profile events are more reliable for audio
+                // and ACL caused duplicate triggers with the profile events
             }
         }
     }
@@ -53,12 +50,6 @@ class BluetoothAutoPlayReceiver(
             BluetoothA2dp.ACTION_CONNECTION_STATE_CHANGED,
             BluetoothHeadset.ACTION_CONNECTION_STATE_CHANGED -> {
                 handleProfileConnectionChange(intent)
-            }
-            BluetoothDevice.ACTION_ACL_CONNECTED -> {
-                handleAclConnected(intent)
-            }
-            BluetoothDevice.ACTION_ACL_DISCONNECTED -> {
-                handleAclDisconnected(intent)
             }
         }
     }
@@ -132,108 +123,4 @@ class BluetoothAutoPlayReceiver(
         }
     }
 
-    private fun handleAclConnected(intent: Intent) {
-        val device: BluetoothDevice? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE, BluetoothDevice::class.java)
-        } else {
-            @Suppress("DEPRECATION")
-            intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE)
-        }
-
-        if (device != null) {
-            val deviceName = try {
-                device.name ?: "Unknown Device"
-            } catch (e: SecurityException) {
-                "Bluetooth Device"
-            }
-
-            // Check if it's an audio OUTPUT device (speakers, headphones, car kit)
-            val deviceClass = try {
-                device.bluetoothClass
-            } catch (e: SecurityException) {
-                null
-            }
-
-            val majorClass = deviceClass?.majorDeviceClass ?: 0
-
-            // Skip wearables (smartwatches) - they have AUDIO service but aren't audio outputs
-            val isWearable = majorClass == android.bluetooth.BluetoothClass.Device.Major.WEARABLE
-            if (isWearable) {
-                Log.d(TAG, "Skipping wearable device: $deviceName")
-                return
-            }
-
-            // Only trigger for actual audio output devices
-            val isAudioOutput = deviceClass?.let { btClass ->
-                majorClass == android.bluetooth.BluetoothClass.Device.Major.AUDIO_VIDEO ||
-                btClass.hasService(android.bluetooth.BluetoothClass.Service.RENDER)
-            } ?: false
-
-            if (isAudioOutput) {
-                // Debounce
-                val now = System.currentTimeMillis()
-                if (deviceName == lastConnectedDevice && now - lastConnectionTime < 5000) {
-                    return
-                }
-
-                lastConnectedDevice = deviceName
-                lastConnectionTime = now
-
-                Log.i(TAG, "Bluetooth audio device (ACL) connected: $deviceName")
-                onBluetoothAudioConnected(deviceName)
-            } else {
-                Log.d(TAG, "Non-audio Bluetooth device connected, ignoring: $deviceName")
-            }
-        }
-    }
-
-    private fun handleAclDisconnected(intent: Intent) {
-        val device: BluetoothDevice? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE, BluetoothDevice::class.java)
-        } else {
-            @Suppress("DEPRECATION")
-            intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE)
-        }
-
-        if (device != null) {
-            val deviceName = try {
-                device.name ?: "Unknown Device"
-            } catch (e: SecurityException) {
-                "Bluetooth Device"
-            }
-
-            // Check if it's an audio OUTPUT device
-            val deviceClass = try {
-                device.bluetoothClass
-            } catch (e: SecurityException) {
-                null
-            }
-
-            val majorClass = deviceClass?.majorDeviceClass ?: 0
-            val isWearable = majorClass == android.bluetooth.BluetoothClass.Device.Major.WEARABLE
-            if (isWearable) {
-                Log.d(TAG, "Skipping wearable device disconnect: $deviceName")
-                return
-            }
-
-            val isAudioOutput = deviceClass?.let { btClass ->
-                majorClass == android.bluetooth.BluetoothClass.Device.Major.AUDIO_VIDEO ||
-                btClass.hasService(android.bluetooth.BluetoothClass.Service.RENDER)
-            } ?: false
-
-            if (isAudioOutput) {
-                // Debounce
-                val now = System.currentTimeMillis()
-                if (deviceName == lastDisconnectedDevice && now - lastDisconnectionTime < 5000) {
-                    return
-                }
-
-                lastDisconnectedDevice = deviceName
-                lastDisconnectionTime = now
-
-                Log.i(TAG, "Bluetooth audio device (ACL) disconnected: $deviceName")
-                onBluetoothAudioDisconnected?.invoke(deviceName)
-            }
-        }
-    }
 }
