@@ -17,9 +17,6 @@
     <!-- Battery optimization exemption for reliable background playback -->
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
-    <!-- Phone state permission for pausing music during calls -->
-    <uses-permission android:name="android.permission.READ_PHONE_STATE" />
-
     <!-- For installing APK updates -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
