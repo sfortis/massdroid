@@ -1402,35 +1402,58 @@ class MainActivity : AppCompatActivity(),
             Log.d(TAG, "Bluetooth audio check #$attempts: A2DP=$isBluetoothA2dpOn, SCO=$isBluetoothScoOn")
 
             if (isBluetoothA2dpOn || isBluetoothScoOn) {
-                Log.i(TAG, "Bluetooth audio ready, checking if phone speaker is selected...")
-                // Only auto-play if phone speaker is selected
-                checkIfPhoneIsActivePlayer { isPhoneSelected ->
-                    if (isPhoneSelected) {
-                        Log.i(TAG, "Phone selected, starting playback on: $deviceName")
-                        executeMediaCommand("play")
-                        Toast.makeText(this, "Auto-playing: $deviceName", Toast.LENGTH_SHORT).show()
-                    } else {
-                        Log.i(TAG, "Phone not selected - skipping Bluetooth auto-play (external speaker in use)")
-                    }
-                }
+                Log.i(TAG, "Bluetooth audio ready, selecting phone speaker and starting playback...")
+                // Select phone speaker and play
+                selectPhoneAndPlay(deviceName)
             } else if (attempts < maxAttempts) {
                 handler.postDelayed({ checkAndPlay() }, 500)
             } else {
-                Log.w(TAG, "Bluetooth audio not ready after ${maxAttempts * 500}ms, checking phone selection...")
-                checkIfPhoneIsActivePlayer { isPhoneSelected ->
-                    if (isPhoneSelected) {
-                        Log.i(TAG, "Phone selected, playing anyway on: $deviceName")
-                        executeMediaCommand("play")
-                        Toast.makeText(this, "Auto-playing: $deviceName", Toast.LENGTH_SHORT).show()
-                    } else {
-                        Log.i(TAG, "Phone not selected - skipping Bluetooth auto-play")
-                    }
-                }
+                Log.w(TAG, "Bluetooth audio not ready after ${maxAttempts * 500}ms, trying anyway...")
+                selectPhoneAndPlay(deviceName)
             }
         }
 
         // Start checking
         handler.post { checkAndPlay() }
+    }
+
+    /**
+     * Select the phone speaker (SendSpin) and start playback.
+     * Used for Bluetooth auto-play to ensure audio goes through phone → BT.
+     */
+    private fun selectPhoneAndPlay(deviceName: String) {
+        val script = """
+            (function() {
+                const sendspinId = localStorage.getItem('sendspin_webplayer_id');
+                if (!sendspinId) {
+                    console.log('[BT-AutoPlay] No SendSpin player ID found');
+                    return JSON.stringify({ success: false, error: 'no_sendspin_id' });
+                }
+
+                // Select the phone speaker
+                if (window.MaWebSocket && window.MaWebSocket.setSelectedPlayer) {
+                    console.log('[BT-AutoPlay] Selecting phone speaker:', sendspinId);
+                    window.MaWebSocket.setSelectedPlayer(sendspinId, 'Phone');
+                    localStorage.setItem('massdroid_selected_player_id', sendspinId);
+                }
+
+                // Start playback on phone speaker
+                if (window.MaWebSocket && window.MaWebSocket.isConnected()) {
+                    console.log('[BT-AutoPlay] Starting playback on phone speaker');
+                    window.MaWebSocket.play(sendspinId);
+                    return JSON.stringify({ success: true, player: sendspinId });
+                }
+
+                return JSON.stringify({ success: false, error: 'not_connected' });
+            })();
+        """.trimIndent()
+
+        webView.evaluateJavascript(script) { result ->
+            Log.i(TAG, "BT auto-play result: $result")
+            if (result.contains("success\":true")) {
+                Toast.makeText(this, "Auto-playing: $deviceName", Toast.LENGTH_SHORT).show()
+            }
+        }
     }
 
     private fun triggerPlay(resumePositionMs: Long, durationMs: Long) {
@@ -1796,28 +1819,34 @@ class MainActivity : AppCompatActivity(),
                 TelephonyManager.CALL_STATE_IDLE -> {
                     // Call ended - resume if we paused for the call
                     if (pausedDueToPhoneCall) {
-                        Log.i(TAG, "Phone call ended - unmuting and resuming music")
                         pausedDueToPhoneCall = false
 
                         // Unmute the music stream
                         audioManager.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_UNMUTE, 0)
-                        Log.i(TAG, "Music stream unmuted via AudioManager")
+                        Log.i(TAG, "Phone call ended - music stream unmuted")
 
-                        // Small delay to let the call fully end, then resume playback
-                        handler.postDelayed({
-                            webView.evaluateJavascript("""
-                                (function() {
-                                    console.log('[PhoneCall] Resuming audio after phone call...');
-                                    if (window.musicPlayer && window.musicPlayer.play) {
-                                        window.musicPlayer.play();
-                                        return 'resumed';
-                                    }
-                                    return 'no_player';
-                                })();
-                            """.trimIndent()) { result ->
-                                Log.i(TAG, "Phone call resume result: $result")
-                            }
-                        }, 1000)
+                        // Only resume if Bluetooth audio is connected (phone speaker scope)
+                        val isBluetoothAudio = audioManager.isBluetoothA2dpOn || audioManager.isBluetoothScoOn
+                        if (isBluetoothAudio) {
+                            Log.i(TAG, "Bluetooth audio connected - resuming playback")
+                            // Small delay to let the call fully end, then resume playback
+                            handler.postDelayed({
+                                webView.evaluateJavascript("""
+                                    (function() {
+                                        console.log('[PhoneCall] Resuming audio after phone call...');
+                                        if (window.musicPlayer && window.musicPlayer.play) {
+                                            window.musicPlayer.play();
+                                            return 'resumed';
+                                        }
+                                        return 'no_player';
+                                    })();
+                                """.trimIndent()) { result ->
+                                    Log.i(TAG, "Phone call resume result: $result")
+                                }
+                            }, 1000)
+                        } else {
+                            Log.i(TAG, "No Bluetooth audio - skipping resume after phone call")
+                        }
                     }
                 }
             }
