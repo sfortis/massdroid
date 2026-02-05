@@ -312,6 +312,10 @@
                             _sendspinConnected = true;
                             console.log('[WSInterceptor] Setting _sendspinConnected = true (from API)');
                         }
+                        // Report phone player ID to Android for audio focus guard
+                        if (window.AndroidMediaSession && window.AndroidMediaSession.setPhonePlayerId) {
+                            window.AndroidMediaSession.setPhonePlayerId(player.player_id);
+                        }
                     }
 
                     // Track when phone player becomes unavailable

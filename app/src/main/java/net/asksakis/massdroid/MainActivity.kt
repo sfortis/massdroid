@@ -144,6 +144,7 @@ class MainActivity : AppCompatActivity(),
     // Selected player tracking (for multi-room speaker control)
     internal var selectedPlayerId: String? = null
     internal var selectedPlayerName: String? = null
+    internal var phonePlayerId: String? = null  // SendSpin player ID (local phone speaker)
 
     // Track URL for detecting changes after settings
     private var urlBeforeSettings: String = ""
@@ -234,12 +235,31 @@ class MainActivity : AppCompatActivity(),
      * Audio focus change listener - handles phone calls, other media apps, etc.
      * When another app requests audio focus (e.g., phone call), we pause playback.
      */
+    /**
+     * Check if the phone speaker (SendSpin) is the currently selected player.
+     * Used to guard audio focus events - we should only pause/resume for phone speaker,
+     * not for external players like Sonos/Chromecast.
+     */
+    private fun isPhonePlayerSelected(): Boolean {
+        val phone = phonePlayerId ?: return true  // If unknown, assume phone (safe default)
+        val selected = selectedPlayerId ?: return true
+        return selected == phone
+    }
+
     private val audioFocusChangeListener = AudioManager.OnAudioFocusChangeListener { focusChange ->
         Log.i(TAG, "Audio focus changed: $focusChange, ignoreFocusEvents=$ignoreFocusEvents")
 
         // Ignore focus events during playback startup to avoid race conditions
         if (ignoreFocusEvents) {
             Log.i(TAG, "Ignoring focus event during startup grace period")
+            return@OnAudioFocusChangeListener
+        }
+
+        // Audio focus only matters for the phone speaker (SendSpin).
+        // External players (Sonos, Chromecast) are not affected by phone audio focus.
+        if (!isPhonePlayerSelected()) {
+            Log.i(TAG, "External player selected (${selectedPlayerName}) - ignoring audio focus change")
+            hasAudioFocus = focusChange == AudioManager.AUDIOFOCUS_GAIN
             return@OnAudioFocusChangeListener
         }
 
@@ -2640,6 +2660,13 @@ class MainActivity : AppCompatActivity(),
                 // Show toast
                 Toast.makeText(activity, "Controlling: $playerName", Toast.LENGTH_SHORT).show()
             }
+        }
+
+        @JavascriptInterface
+        fun setPhonePlayerId(playerId: String) {
+            val activity = activityRef.get() ?: return
+            Log.i(TAG, "Phone player ID set: $playerId")
+            activity.phonePlayerId = playerId
         }
     }
 
