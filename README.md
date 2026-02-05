@@ -39,8 +39,10 @@ You can access Music Assistant from any browser, but a native Android app offers
 - **Native Media Controls** – Control playback from lock screen, notification shade, Bluetooth devices, and Wear OS.
 - **Album Artwork** – Beautiful album art displayed in notifications and on lock screen.
 - **Seekable Progress Bar** – Track progress with native seek support.
-- **Auto-play on Bluetooth** – Automatically resume playback when connecting to Bluetooth audio devices.
+- **Auto-play on Bluetooth** – Automatically resume playback when connecting to Bluetooth audio devices (with smart reload for stale connections).
 - **Auto-resume on Network Change** – Seamless playback continuation when switching between WiFi and mobile data.
+- **Page Zoom** – Adjustable zoom level (50%-150%) for better content fit on any screen.
+- **Battery Optimization** – WebView timers pause when not playing to save battery in background.
 - **Dark Mode Support** – Follows system theme automatically.
 - **Color Accent Customization** – Choose your preferred accent color for the UI.
 - **mTLS Support** – Client certificate authentication for secure server connections.
@@ -135,6 +137,7 @@ Access settings from the navigation drawer (hamburger menu):
 | **Keep Screen On** | Prevent screen timeout while app is open |
 | **Auto-play on Bluetooth** | Resume playback when Bluetooth audio connects |
 | **Auto-resume on Network** | Resume after WiFi/mobile data switch |
+| **Page Zoom** | Adjust page zoom level (50%-150%) |
 | **Accent Color** | Customize the app's accent color |
 | **Clear Certificate & Cache** | Reset saved client certificate and WebView cache |
 | **Check for Updates** | Manually check for new versions on GitHub |
