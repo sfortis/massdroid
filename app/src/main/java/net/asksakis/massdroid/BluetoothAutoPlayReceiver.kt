@@ -2,7 +2,6 @@ package net.asksakis.massdroid
 
 import android.bluetooth.BluetoothA2dp
 import android.bluetooth.BluetoothDevice
-import android.bluetooth.BluetoothHeadset
 import android.bluetooth.BluetoothProfile
 import android.content.BroadcastReceiver
 import android.content.Context
@@ -27,11 +26,8 @@ class BluetoothAutoPlayReceiver(
         fun getIntentFilter(): IntentFilter {
             return IntentFilter().apply {
                 // A2DP (Advanced Audio Distribution Profile) - for music streaming
+                // Note: Headset profile removed - A2DP is sufficient for audio output
                 addAction(BluetoothA2dp.ACTION_CONNECTION_STATE_CHANGED)
-                // Headset profile - for car kits and headsets
-                addAction(BluetoothHeadset.ACTION_CONNECTION_STATE_CHANGED)
-                // Note: ACL events removed - profile events are more reliable for audio
-                // and ACL caused duplicate triggers with the profile events
             }
         }
     }
@@ -47,8 +43,7 @@ class BluetoothAutoPlayReceiver(
         val action = intent.action ?: return
 
         when (action) {
-            BluetoothA2dp.ACTION_CONNECTION_STATE_CHANGED,
-            BluetoothHeadset.ACTION_CONNECTION_STATE_CHANGED -> {
+            BluetoothA2dp.ACTION_CONNECTION_STATE_CHANGED -> {
                 handleProfileConnectionChange(intent)
             }
         }
@@ -86,6 +81,7 @@ class BluetoothAutoPlayReceiver(
             btClass.hasService(android.bluetooth.BluetoothClass.Service.RENDER)
         } ?: false
 
+        // Skip wearables (smartwatches) and non-audio devices
         if (isWearable || !isAudioOutput) {
             Log.d(TAG, "Skipping non-audio device: $deviceName (wearable=$isWearable, audioOutput=$isAudioOutput)")
             return

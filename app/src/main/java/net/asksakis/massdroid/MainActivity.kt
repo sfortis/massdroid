@@ -116,6 +116,11 @@ class MainActivity : AppCompatActivity(),
     @Volatile
     internal var pendingAutoPlayAfterReload = false
 
+    // Bluetooth auto-play after reload (when WebSocket was stale)
+    @Volatile
+    private var pendingBluetoothAutoPlayDevice: String? = null
+
+
     // Back navigation callbacks (OnBackPressedDispatcher)
     // Drawer callback: enabled when drawer is open
     private val drawerBackCallback = object : OnBackPressedCallback(false) {
@@ -689,8 +694,31 @@ class MainActivity : AppCompatActivity(),
                     return@BluetoothAutoPlayReceiver
                 }
 
-                // Wait for Bluetooth audio to be ready before playing
-                waitForBluetoothAudioAndPlay(deviceName)
+                // Ignore if we're already processing a BT auto-play
+                if (pendingBluetoothAutoPlayDevice != null) {
+                    Log.d(TAG, "Already processing BT auto-play, ignoring duplicate event")
+                    return@BluetoothAutoPlayReceiver
+                }
+
+                // Resume WebView timers in case they were paused (battery saving when idle)
+                webView.resumeTimers()
+
+                // Check if PHONE is actively streaming audio (not just any player playing)
+                // We need to check if phone player is selected AND playing
+                checkIfPhoneIsActivePlayer { isPhoneSelected ->
+                    if (isPhoneSelected && isCurrentlyPlaying) {
+                        // Phone is playing - don't reload, just let audio route to BT
+                        Log.i(TAG, "BT connected while PHONE is playing - audio will route to BT automatically")
+                        Toast.makeText(this, "Connected: $deviceName", Toast.LENGTH_SHORT).show()
+                        return@checkIfPhoneIsActivePlayer
+                    }
+
+                    // Phone is not playing (even if Sonos is) - reload and start playback
+                    Log.i(TAG, "BT connected - phone not playing, reloading for auto-play")
+                    pendingBluetoothAutoPlayDevice = deviceName
+                    Toast.makeText(this, "Connecting $deviceName...", Toast.LENGTH_SHORT).show()
+                    webView.reload()
+                }
             },
             onBluetoothAudioDisconnected = { deviceName ->
                 Log.i(TAG, "Bluetooth device disconnected: $deviceName")
@@ -836,8 +864,9 @@ class MainActivity : AppCompatActivity(),
             javaScriptEnabled = true
             domStorageEnabled = true
             databaseEnabled = true
-            setSupportZoom(true)
-            builtInZoomControls = true
+            // Disable pinch-to-zoom - zoom is controlled via settings
+            setSupportZoom(false)
+            builtInZoomControls = false
             displayZoomControls = false
             loadWithOverviewMode = true
             useWideViewPort = true
@@ -847,6 +876,8 @@ class MainActivity : AppCompatActivity(),
             // when using Cloudflare Access with Google authentication
             userAgentString = "Mozilla/5.0 (Linux; Android ${Build.VERSION.RELEASE}; ${Build.MODEL}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
         }
+
+        // Note: Page zoom is applied via JavaScript in onPageFinished -> applyPageZoom()
 
         // Add JavaScript interface for media metadata
         // Use WeakReference to avoid memory leaks if Activity is destroyed while WebView holds reference
@@ -908,6 +939,10 @@ class MainActivity : AppCompatActivity(),
                 progressBar.visibility = View.GONE
                 webViewReady = true
                 Log.d(TAG, "Page finished loading: $url")
+
+                // Apply page zoom from settings
+                applyPageZoom()
+
                 // MediaSession interceptor already injected in onPageStarted
                 // WebView's SendSpin handles audio, interceptor forwards metadata to Android
 
@@ -920,8 +955,11 @@ class MainActivity : AppCompatActivity(),
                         queryCurrentPlaybackState()
                     }, 3000)
 
-                    // AUTO-RESUME DISABLED FOR DEBUGGING
-                    // if (pendingAutoPlayAfterReload) { ... }
+                    // Handle pending Bluetooth auto-play after page reload
+                    // Note: We don't start polling here - onSendspinStabilized will handle it
+                    if (pendingBluetoothAutoPlayDevice != null) {
+                        Log.i(TAG, "Page reloaded for BT auto-play, waiting for onSendspinStabilized...")
+                    }
                 }
             }
 
@@ -1186,7 +1224,29 @@ class MainActivity : AppCompatActivity(),
             "keep_screen_on" -> {
                 applyKeepScreenOnSetting()
             }
+            "page_zoom" -> {
+                applyPageZoom()
+            }
         }
+    }
+
+    internal fun applyPageZoom() {
+        val zoom = preferencesHelper.pageZoom
+        val scale = zoom / 100.0
+        // Inject JavaScript to modify viewport meta tag for reliable scaling
+        webView.evaluateJavascript("""
+            (function() {
+                var viewport = document.querySelector('meta[name="viewport"]');
+                if (!viewport) {
+                    viewport = document.createElement('meta');
+                    viewport.name = 'viewport';
+                    document.head.appendChild(viewport);
+                }
+                viewport.content = 'width=device-width, initial-scale=$scale, maximum-scale=$scale, user-scalable=no';
+                console.log('[MassDroid] Zoom set to ${zoom}%');
+                return 'zoom: ${zoom}%';
+            })();
+        """.trimIndent(), null)
     }
 
     private fun setupMediaSession() {
@@ -1418,11 +1478,14 @@ class MainActivity : AppCompatActivity(),
     }
 
     /**
-     * Select the phone speaker (SendSpin) and start playback.
-     * Used for Bluetooth auto-play to ensure audio goes through phone → BT.
+     * Select the phone speaker (SendSpin) and start playback using stop+play sequence.
+     * Uses the same approach as network reconnect auto-resume for reliability.
      */
     private fun selectPhoneAndPlay(deviceName: String) {
-        val script = """
+        Log.i(TAG, "BT auto-play: Selecting phone speaker and starting playback...")
+
+        // Step 1: Select phone speaker
+        val selectScript = """
             (function() {
                 const sendspinId = localStorage.getItem('sendspin_webplayer_id');
                 if (!sendspinId) {
@@ -1430,29 +1493,64 @@ class MainActivity : AppCompatActivity(),
                     return JSON.stringify({ success: false, error: 'no_sendspin_id' });
                 }
 
-                // Select the phone speaker
                 if (window.MaWebSocket && window.MaWebSocket.setSelectedPlayer) {
                     console.log('[BT-AutoPlay] Selecting phone speaker:', sendspinId);
                     window.MaWebSocket.setSelectedPlayer(sendspinId, 'Phone');
                     localStorage.setItem('massdroid_selected_player_id', sendspinId);
-                }
-
-                // Start playback on phone speaker
-                if (window.MaWebSocket && window.MaWebSocket.isConnected()) {
-                    console.log('[BT-AutoPlay] Starting playback on phone speaker');
-                    window.MaWebSocket.play(sendspinId);
                     return JSON.stringify({ success: true, player: sendspinId });
                 }
 
-                return JSON.stringify({ success: false, error: 'not_connected' });
+                return JSON.stringify({ success: false, error: 'no_websocket' });
             })();
         """.trimIndent()
 
-        webView.evaluateJavascript(script) { result ->
-            Log.i(TAG, "BT auto-play result: $result")
-            if (result.contains("success\":true")) {
-                Toast.makeText(this, "Auto-playing: $deviceName", Toast.LENGTH_SHORT).show()
+        webView.evaluateJavascript(selectScript) { selectResult ->
+            Log.i(TAG, "BT auto-play select result: $selectResult")
+
+            if (!selectResult.contains("\\\"success\\\":true")) {
+                Log.w(TAG, "Failed to select phone speaker")
+                pendingBluetoothAutoPlayDevice = null
+                return@evaluateJavascript
             }
+
+            // Step 2: Stop current playback (like network reconnect does)
+            handler.postDelayed({
+                Log.i(TAG, "BT auto-play: Sending stop command...")
+                webView.evaluateJavascript("""
+                    (function() {
+                        if (window.MaWebSocket && window.MaWebSocket.isConnected()) {
+                            console.log('[BT-AutoPlay] Sending stop command');
+                            window.MaWebSocket.stop();
+                            return 'stop_sent';
+                        }
+                        return 'not_connected';
+                    })();
+                """.trimIndent()) { stopResult ->
+                    Log.i(TAG, "BT auto-play stop result: $stopResult")
+
+                    // Step 3: Play (without player ID - uses selected player)
+                    handler.postDelayed({
+                        Log.i(TAG, "BT auto-play: Sending play command...")
+                        webView.evaluateJavascript("""
+                            (function() {
+                                if (window.MaWebSocket && window.MaWebSocket.isConnected()) {
+                                    console.log('[BT-AutoPlay] Sending play command');
+                                    window.MaWebSocket.play();
+                                    return 'play_sent';
+                                }
+                                return 'not_connected';
+                            })();
+                        """.trimIndent()) { playResult ->
+                            Log.i(TAG, "BT auto-play play result: $playResult")
+                            pendingBluetoothAutoPlayDevice = null
+
+                            if (playResult.contains("play_sent")) {
+                                Toast.makeText(this, "Auto-playing: $deviceName", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                    }, 500)  // Wait 500ms after stop before play
+                }
+            }, 300)  // Small delay after select before stop
         }
     }
 
@@ -1856,9 +1954,12 @@ class MainActivity : AppCompatActivity(),
     override fun onResume() {
         super.onResume()
         webView.onResume()
+        webView.resumeTimers()  // Always resume timers when app comes to foreground
         preferencesHelper.registerOnChangeListener(this)
         // Update keep screen on state in case it changed in settings
         applyKeepScreenOnSetting()
+        // Apply page zoom in case it changed in settings
+        applyPageZoom()
         // Update drawer header with current URL
         updateDrawerHeader()
 
@@ -1897,8 +1998,12 @@ class MainActivity : AppCompatActivity(),
     override fun onPause() {
         super.onPause()
         webView.onPause()
-        // Don't pause timers - we want audio to continue in background
-        // webView.pauseTimers() would stop ALL JavaScript including audio playback
+        // Only pause timers if NOT playing - saves battery when idle in background
+        // When playing, we need timers for audio streaming
+        if (!isCurrentlyPlaying) {
+            webView.pauseTimers()
+            Log.d(TAG, "WebView timers paused (not playing)")
+        }
         preferencesHelper.unregisterOnChangeListener(this)
         // Track URL and color to detect changes when resuming
         urlBeforeSettings = preferencesHelper.pwaUrl
@@ -2006,9 +2111,9 @@ class MainActivity : AppCompatActivity(),
                     return isPhone;
                 }
 
-                // Fallback: if no selection yet, assume phone is active
-                console.log('[AutoResume] No selection yet, assuming phone');
-                return true;
+                // Fallback: if no selection yet, DON'T assume phone (safer for disconnect handling)
+                console.log('[AutoResume] No selection info available');
+                return false;
             })();
         """.trimIndent()
 
@@ -2297,7 +2402,21 @@ class MainActivity : AppCompatActivity(),
             Log.i(TAG, "========================================")
 
             if (!isConnected) {
-                Log.w(TAG, "Stabilized but not connected - skipping auto-resume")
+                Log.w(TAG, "Stabilized but not connected - waiting for SendSpin to connect...")
+                // DON'T clear pendingBluetoothAutoPlayDevice - we need it for when SendSpin connects
+                // The next stabilization event (after SendSpin connects) will handle it
+                return
+            }
+
+            // Handle pending Bluetooth auto-play (triggered by BT connect + reload)
+            val btDevice = activity.pendingBluetoothAutoPlayDevice
+            if (btDevice != null) {
+                Log.i(TAG, "Triggering BT auto-play for: $btDevice")
+                // DON'T clear pendingBluetoothAutoPlayDevice here - let selectPhoneAndPlay clear it
+                // This protects against duplicate BT profile events during selectPhoneAndPlay
+                activity.runOnUiThread {
+                    activity.selectPhoneAndPlay(btDevice)
+                }
                 return
             }
 

@@ -14,7 +14,9 @@ class PreferencesHelper(context: Context) {
         private const val KEY_AUTO_PLAY_BLUETOOTH = "auto_play_bluetooth"
         private const val KEY_AUTO_RESUME_NETWORK = "auto_resume_network"
         private const val KEY_CLIENT_CERT_ALIAS = "client_cert_alias"
+        private const val KEY_PAGE_ZOOM = "page_zoom"
         private const val DEFAULT_URL = ""
+        private const val DEFAULT_ZOOM = 100
     }
 
     var pwaUrl: String
@@ -39,6 +41,10 @@ class PreferencesHelper(context: Context) {
     var clientCertAlias: String?
         get() = sharedPreferences.getString(KEY_CLIENT_CERT_ALIAS, null)
         set(value) = sharedPreferences.edit().putString(KEY_CLIENT_CERT_ALIAS, value).apply()
+
+    var pageZoom: Int
+        get() = sharedPreferences.getInt(KEY_PAGE_ZOOM, DEFAULT_ZOOM)
+        set(value) = sharedPreferences.edit().putInt(KEY_PAGE_ZOOM, value).apply()
 
     fun registerOnChangeListener(listener: SharedPreferences.OnSharedPreferenceChangeListener) {
         sharedPreferences.registerOnSharedPreferenceChangeListener(listener)

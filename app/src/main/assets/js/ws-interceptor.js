@@ -172,6 +172,17 @@
             } else {
                 console.warn('[WSInterceptor] MaWebSocket not available!');
             }
+
+            // Also track API WebSocket for stabilization (in case no separate SendSpin WebSocket)
+            ws.addEventListener('open', function() {
+                console.log('[WSInterceptor] API WebSocket opened, starting stabilization timer');
+                onConnectionStateChange('API_OPEN', {});
+            });
+
+            ws.addEventListener('close', function(event) {
+                console.log('[WSInterceptor] API WebSocket closed:', event.code);
+                onConnectionStateChange('API_CLOSE', { code: event.code });
+            });
         }
 
         // ============================================
@@ -288,17 +299,19 @@
                     }
                 }
 
-                // PHONE PLAYER AVAILABLE: Log when phone player becomes available via API WebSocket
-                // NOTE: We do NOT trigger onSendspinConnected from API events anymore!
-                // The API shows available=true before SendSpin audio stream is ready.
-                // We only trigger from SendSpin WebSocket 'open' event for reliable timing.
+                // PHONE PLAYER AVAILABLE: Track when phone player becomes available via API WebSocket
+                // Since there may not be a separate SendSpin WebSocket, we use API events to track availability
                 if (conn.isMainApi && (msg.event === 'player_added' || msg.event === 'player_updated') && msg.data) {
                     const player = msg.data;
                     const phonePlayerId = localStorage.getItem('sendspin_webplayer_id');
 
-                    // Just log, don't trigger - wait for SendSpin WebSocket open instead
+                    // Mark as connected when phone player becomes available
                     if (phonePlayerId && player.player_id === phonePlayerId && player.available === true) {
-                        console.log('[WSInterceptor] Phone player available via API: ' + player.player_id + ' (waiting for WebSocket)');
+                        console.log('[WSInterceptor] Phone player available via API: ' + player.player_id);
+                        if (!_sendspinConnected) {
+                            _sendspinConnected = true;
+                            console.log('[WSInterceptor] Setting _sendspinConnected = true (from API)');
+                        }
                     }
 
                     // Track when phone player becomes unavailable
