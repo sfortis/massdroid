@@ -7,8 +7,6 @@ import android.content.ComponentName
 import android.media.AudioAttributes
 import android.media.AudioFocusRequest
 import android.media.AudioManager
-import android.telephony.TelephonyCallback
-import android.telephony.TelephonyManager
 import android.content.Intent
 import android.content.ServiceConnection
 import android.content.SharedPreferences
@@ -91,14 +89,6 @@ class MainActivity : AppCompatActivity(),
     internal var pausedDueToFocusLoss = false  // Track if we paused due to losing focus
     @Volatile
     internal var ignoreFocusEvents = false  // Temporarily ignore focus events during startup
-
-    // Phone call detection (backup for audio focus)
-    private lateinit var telephonyManager: TelephonyManager
-    private var telephonyCallback: TelephonyCallback? = null  // Android 12+
-    @Suppress("DEPRECATION")
-    private var phoneStateListener: android.telephony.PhoneStateListener? = null  // Pre-Android 12
-    @Volatile
-    private var pausedDueToPhoneCall = false
 
     // Position state tracking (internal for WeakReference access from MediaMetadataInterface)
     internal var currentDurationMs: Long = 0
@@ -277,6 +267,7 @@ class MainActivity : AppCompatActivity(),
                 hasAudioFocus = false
                 if (isCurrentlyPlaying) {
                     pausedDueToFocusLoss = true
+                    audioManager.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_MUTE, 0)
                     executeMediaCommand("pause")
                 }
             }
@@ -290,9 +281,12 @@ class MainActivity : AppCompatActivity(),
                 Log.i(TAG, "Audio focus GAINED")
                 hasAudioFocus = true
                 if (pausedDueToFocusLoss) {
-                    Log.i(TAG, "Resuming playback after focus regained")
                     pausedDueToFocusLoss = false
-                    executeMediaCommand("play")
+                    audioManager.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_UNMUTE, 0)
+                    handler.postDelayed({
+                        Log.i(TAG, "Resuming playback after focus regained")
+                        executeMediaCommand("play")
+                    }, 500)
                 }
             }
         }
@@ -311,9 +305,6 @@ class MainActivity : AppCompatActivity(),
 
         // Initialize audio manager for audio focus handling
         audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
-
-        // Initialize telephony manager for phone call detection
-        telephonyManager = getSystemService(Context.TELEPHONY_SERVICE) as TelephonyManager
 
         // Setup views
         setupViews()
@@ -657,12 +648,6 @@ class MainActivity : AppCompatActivity(),
             }
         }
 
-        // Phone state permission for pausing during calls
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_PHONE_STATE)
-            != PackageManager.PERMISSION_GRANTED) {
-            permissionsNeeded.add(Manifest.permission.READ_PHONE_STATE)
-        }
-
         if (permissionsNeeded.isNotEmpty()) {
             Log.i(TAG, "Requesting permissions: ${permissionsNeeded.joinToString()}")
             ActivityCompat.requestPermissions(
@@ -688,11 +673,6 @@ class MainActivity : AppCompatActivity(),
             registerBluetoothReceiver()
         }
 
-        // Setup phone call listener (needs READ_PHONE_STATE)
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_PHONE_STATE)
-            == PackageManager.PERMISSION_GRANTED) {
-            registerPhoneCallListener()
-        }
     }
 
     private fun registerBluetoothReceiver() {
@@ -1858,119 +1838,6 @@ class MainActivity : AppCompatActivity(),
         Log.i(TAG, "Audio focus abandoned")
     }
 
-    /**
-     * Register the phone call listener to pause music during calls.
-     * Called after READ_PHONE_STATE permission is granted.
-     */
-    private fun registerPhoneCallListener() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            // Android 12+ uses TelephonyCallback
-            telephonyCallback = object : TelephonyCallback(), TelephonyCallback.CallStateListener {
-                override fun onCallStateChanged(state: Int) {
-                    handleCallStateChanged(state)
-                }
-            }
-            try {
-                telephonyManager.registerTelephonyCallback(
-                    mainExecutor,
-                    telephonyCallback!!
-                )
-                Log.i(TAG, "TelephonyCallback registered for phone call detection")
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to register TelephonyCallback", e)
-            }
-        } else {
-            // Pre-Android 12: Use deprecated PhoneStateListener
-            @Suppress("DEPRECATION")
-            phoneStateListener = object : android.telephony.PhoneStateListener() {
-                @Deprecated("Deprecated in Java")
-                override fun onCallStateChanged(state: Int, phoneNumber: String?) {
-                    handleCallStateChanged(state)
-                }
-            }
-            @Suppress("DEPRECATION")
-            telephonyManager.listen(phoneStateListener, android.telephony.PhoneStateListener.LISTEN_CALL_STATE)
-            Log.i(TAG, "PhoneStateListener registered for phone call detection")
-        }
-    }
-
-    /**
-     * Handle phone call state changes - pause during calls, resume after.
-     */
-    private fun handleCallStateChanged(state: Int) {
-        Log.i(TAG, "Phone call state changed: $state (IDLE=0, RINGING=1, OFFHOOK=2)")
-
-        runOnUiThread {
-            when (state) {
-                TelephonyManager.CALL_STATE_RINGING,
-                TelephonyManager.CALL_STATE_OFFHOOK -> {
-                    // Phone is ringing or in a call - pause if playing
-                    if (!pausedDueToPhoneCall) {
-                        Log.i(TAG, "Phone call detected - pausing music via direct JS + muting stream")
-                        pausedDueToPhoneCall = true
-
-                        // Method 1: Mute the music stream directly via AudioManager
-                        // This works even for WebSocket-based audio like SendSpin
-                        // Using adjustStreamVolume instead of deprecated setStreamMute
-                        audioManager.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_MUTE, 0)
-                        Log.i(TAG, "Music stream muted via AudioManager")
-
-                        // Method 2: Also try to pause via JavaScript
-                        webView.evaluateJavascript("""
-                            (function() {
-                                console.log('[PhoneCall] Pausing audio for phone call...');
-                                if (window.musicPlayer && window.musicPlayer.pause) {
-                                    window.musicPlayer.pause();
-                                    return 'paused_via_musicPlayer';
-                                }
-                                // Fallback: try to pause all audio/video elements
-                                document.querySelectorAll('audio, video').forEach(function(el) {
-                                    el.pause();
-                                });
-                                return 'paused_via_elements';
-                            })();
-                        """.trimIndent()) { result ->
-                            Log.i(TAG, "Phone call pause result: $result")
-                        }
-                    }
-                }
-                TelephonyManager.CALL_STATE_IDLE -> {
-                    // Call ended - resume if we paused for the call
-                    if (pausedDueToPhoneCall) {
-                        pausedDueToPhoneCall = false
-
-                        // Unmute the music stream
-                        audioManager.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_UNMUTE, 0)
-                        Log.i(TAG, "Phone call ended - music stream unmuted")
-
-                        // Only resume if Bluetooth audio is connected (phone speaker scope)
-                        val isBluetoothAudio = audioManager.isBluetoothA2dpOn || audioManager.isBluetoothScoOn
-                        if (isBluetoothAudio) {
-                            Log.i(TAG, "Bluetooth audio connected - resuming playback")
-                            // Small delay to let the call fully end, then resume playback
-                            handler.postDelayed({
-                                webView.evaluateJavascript("""
-                                    (function() {
-                                        console.log('[PhoneCall] Resuming audio after phone call...');
-                                        if (window.musicPlayer && window.musicPlayer.play) {
-                                            window.musicPlayer.play();
-                                            return 'resumed';
-                                        }
-                                        return 'no_player';
-                                    })();
-                                """.trimIndent()) { result ->
-                                    Log.i(TAG, "Phone call resume result: $result")
-                                }
-                            }, 1000)
-                        } else {
-                            Log.i(TAG, "No Bluetooth audio - skipping resume after phone call")
-                        }
-                    }
-                }
-            }
-        }
-    }
-
     override fun onResume() {
         super.onResume()
         webView.onResume()
@@ -2676,33 +2543,8 @@ class MainActivity : AppCompatActivity(),
         // Abandon audio focus
         abandonAudioFocus()
 
-        // Unregister telephony callback/listener
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            telephonyCallback?.let {
-                try {
-                    telephonyManager.unregisterTelephonyCallback(it)
-                    Log.d(TAG, "TelephonyCallback unregistered")
-                } catch (e: Exception) {
-                    Log.e(TAG, "Error unregistering TelephonyCallback", e)
-                }
-            }
-            telephonyCallback = null
-        } else {
-            // Pre-Android 12: Unregister PhoneStateListener
-            phoneStateListener?.let {
-                try {
-                    @Suppress("DEPRECATION")
-                    telephonyManager.listen(it, android.telephony.PhoneStateListener.LISTEN_NONE)
-                    Log.d(TAG, "PhoneStateListener unregistered")
-                } catch (e: Exception) {
-                    Log.e(TAG, "Error unregistering PhoneStateListener", e)
-                }
-            }
-            phoneStateListener = null
-        }
-
-        // Make sure audio is unmuted if app closes during a call
-        if (pausedDueToPhoneCall) {
+        // Make sure audio is unmuted if app closes during focus loss
+        if (pausedDueToFocusLoss) {
             audioManager.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_UNMUTE, 0)
             Log.d(TAG, "Unmuted audio stream on destroy")
         }
