@@ -1,16 +1,23 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 500">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 860 580">
   <defs>
     <style>
       .box { fill: #1a1a2e; stroke: #4a9eff; stroke-width: 2; rx: 8; }
       .box-inner { fill: #16213e; stroke: #4a9eff; stroke-width: 1.5; rx: 6; }
       .box-deep { fill: #0f3460; stroke: #4a9eff; stroke-width: 1; rx: 4; }
+      .box-external { fill: #1a1a2e; stroke: #e8a838; stroke-width: 2; rx: 8; }
+      .box-auto { fill: #16213e; stroke: #38e89a; stroke-width: 1.5; rx: 6; }
       .text-title { fill: #ffffff; font-family: Arial, sans-serif; font-size: 16px; font-weight: bold; }
       .text-label { fill: #e0e0e0; font-family: Arial, sans-serif; font-size: 13px; font-weight: bold; }
       .text-item { fill: #b0b0b0; font-family: Arial, sans-serif; font-size: 11px; }
       .text-small { fill: #8a8a8a; font-family: Arial, sans-serif; font-size: 10px; }
+      .text-ext { fill: #e8a838; font-family: Arial, sans-serif; font-size: 13px; font-weight: bold; }
+      .text-auto { fill: #38e89a; font-family: Arial, sans-serif; font-size: 12px; font-weight: bold; }
       .arrow { stroke: #4a9eff; stroke-width: 2; fill: none; marker-end: url(#arrowhead); }
       .arrow-both { stroke: #4a9eff; stroke-width: 2; fill: none; marker-start: url(#arrowhead-left); marker-end: url(#arrowhead); }
-      .bridge-text { fill: #4a9eff; font-family: Arial, sans-serif; font-size: 12px; font-weight: bold; }
+      .arrow-ext { stroke: #e8a838; stroke-width: 2; fill: none; marker-end: url(#arrowhead-ext); }
+      .arrow-ext-both { stroke: #e8a838; stroke-width: 2; fill: none; marker-start: url(#arrowhead-ext-left); marker-end: url(#arrowhead-ext); }
+      .arrow-auto { stroke: #38e89a; stroke-width: 1.5; fill: none; marker-end: url(#arrowhead-auto); stroke-dasharray: 6,3; }
+      .bridge-text { fill: #4a9eff; font-family: Arial, sans-serif; font-size: 11px; font-weight: bold; }
     </style>
     <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
       <polygon points="0 0, 10 3.5, 0 7" fill="#4a9eff" />
@@ -18,60 +25,118 @@
     <marker id="arrowhead-left" markerWidth="10" markerHeight="7" refX="1" refY="3.5" orient="auto-start-reverse">
       <polygon points="10 0, 0 3.5, 10 7" fill="#4a9eff" />
     </marker>
+    <marker id="arrowhead-ext" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#e8a838" />
+    </marker>
+    <marker id="arrowhead-ext-left" markerWidth="10" markerHeight="7" refX="1" refY="3.5" orient="auto-start-reverse">
+      <polygon points="10 0, 0 3.5, 10 7" fill="#e8a838" />
+    </marker>
+    <marker id="arrowhead-auto" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#38e89a" />
+    </marker>
   </defs>
 
-  <!-- Main container -->
-  <rect class="box" x="20" y="20" width="760" height="460" />
-  <text class="text-title" x="400" y="50" text-anchor="middle">Android App</text>
+  <!-- ==================== -->
+  <!-- MA Server (external) -->
+  <!-- ==================== -->
+  <rect class="box-external" x="20" y="20" width="160" height="110" />
+  <text class="text-ext" x="100" y="48" text-anchor="middle">MA Server</text>
+  <rect class="box-deep" x="35" y="60" width="130" height="55" style="stroke: #e8a838;" />
+  <text class="text-item" x="100" y="80" text-anchor="middle">API WebSocket</text>
+  <text class="text-item" x="100" y="97" text-anchor="middle">SendSpin WebSocket</text>
 
-  <!-- WebView box -->
-  <rect class="box-inner" x="40" y="70" width="200" height="170" />
-  <text class="text-label" x="140" y="95" text-anchor="middle">WebView</text>
+  <!-- ================================ -->
+  <!-- Android App container            -->
+  <!-- ================================ -->
+  <rect class="box" x="220" y="20" width="620" height="540" />
+  <text class="text-title" x="530" y="48" text-anchor="middle">Android App (MainActivity)</text>
 
-  <!-- Music Assistant PWA inner box -->
-  <rect class="box-deep" x="60" y="110" width="160" height="80" />
-  <text class="text-item" x="140" y="135" text-anchor="middle">Music</text>
-  <text class="text-item" x="140" y="150" text-anchor="middle">Assistant</text>
-  <text class="text-item" x="140" y="165" text-anchor="middle">PWA</text>
+  <!-- ==================== -->
+  <!-- WebView              -->
+  <!-- ==================== -->
+  <rect class="box-inner" x="240" y="65" width="260" height="200" />
+  <text class="text-label" x="370" y="88" text-anchor="middle">WebView</text>
 
-  <!-- MediaSession box -->
-  <rect class="box-inner" x="450" y="70" width="310" height="170" />
-  <text class="text-label" x="605" y="95" text-anchor="middle">MediaSession</text>
+  <!-- PWA -->
+  <rect class="box-deep" x="255" y="100" width="110" height="65" />
+  <text class="text-item" x="310" y="122" text-anchor="middle">Music Assistant</text>
+  <text class="text-item" x="310" y="138" text-anchor="middle">PWA</text>
 
-  <!-- MediaSession items inner box -->
-  <rect class="box-deep" x="470" y="110" width="270" height="110" />
-  <text class="text-item" x="490" y="135">- Lock screen</text>
-  <text class="text-item" x="490" y="155">- Notification</text>
-  <text class="text-item" x="490" y="175">- Bluetooth / Car</text>
-  <text class="text-item" x="490" y="195">- Wear OS</text>
+  <!-- SendSpin audio -->
+  <rect class="box-deep" x="375" y="100" width="110" height="65" />
+  <text class="text-item" x="430" y="122" text-anchor="middle">SendSpin</text>
+  <text class="text-item" x="430" y="138" text-anchor="middle">Audio Client</text>
 
-  <!-- Bridge arrow between WebView and MediaSession -->
-  <line class="arrow-both" x1="245" y1="150" x2="445" y2="150" />
-  <text class="bridge-text" x="345" y="140" text-anchor="middle">Bridge</text>
+  <!-- JS Bridge layer -->
+  <rect class="box-deep" x="255" y="178" width="230" height="75" />
+  <text class="text-label" x="370" y="198" text-anchor="middle" style="font-size: 11px;">JS Bridge (5 injected scripts)</text>
+  <text class="text-item" x="270" y="216">mediasession-polyfill</text>
+  <text class="text-item" x="270" y="232">ws-interceptor</text>
+  <text class="text-item" x="395" y="216">ma-websocket</text>
+  <text class="text-item" x="395" y="232">player-observer</text>
 
-  <!-- navigator.mediaSession box -->
-  <rect class="box-inner" x="40" y="300" width="200" height="150" />
-  <text class="text-label" x="140" y="325" text-anchor="middle">navigator.</text>
-  <text class="text-label" x="140" y="342" text-anchor="middle">mediaSession</text>
-  <text class="text-item" x="60" y="370">- metadata</text>
-  <text class="text-item" x="60" y="390">- playbackState</text>
-  <text class="text-item" x="60" y="410">- setPositionState</text>
+  <!-- ==================== -->
+  <!-- MediaSession         -->
+  <!-- ==================== -->
+  <rect class="box-inner" x="550" y="65" width="270" height="200" />
+  <text class="text-label" x="685" y="88" text-anchor="middle">MediaSession</text>
+  <rect class="box-deep" x="565" y="100" width="240" height="150" />
+  <text class="text-item" x="585" y="122">Lock screen controls</text>
+  <text class="text-item" x="585" y="142">Notification + artwork</text>
+  <text class="text-item" x="585" y="162">Bluetooth / Car stereo</text>
+  <text class="text-item" x="585" y="182">Wear OS</text>
+  <text class="text-item" x="585" y="202">Seekable progress bar</text>
 
-  <!-- AudioService box -->
-  <rect class="box-inner" x="450" y="300" width="310" height="150" />
-  <text class="text-label" x="605" y="325" text-anchor="middle">AudioService</text>
-  <text class="text-item" x="470" y="360">- Foreground service</text>
-  <text class="text-item" x="470" y="385">- MediaStyle notification</text>
-  <text class="text-item" x="470" y="410">- Album artwork loading</text>
+  <!-- ==================== -->
+  <!-- AudioService         -->
+  <!-- ==================== -->
+  <rect class="box-inner" x="550" y="290" width="270" height="105" />
+  <text class="text-label" x="685" y="315" text-anchor="middle">AudioService</text>
+  <rect class="box-deep" x="565" y="328" width="240" height="55" />
+  <text class="text-item" x="585" y="348">Foreground service</text>
+  <text class="text-item" x="585" y="368">MediaStyle notification</text>
 
-  <!-- Vertical arrow from WebView to navigator.mediaSession -->
-  <line class="arrow" x1="140" y1="245" x2="140" y2="295" />
-  <text class="text-small" x="150" y="275">JS Interceptor</text>
+  <!-- ==================== -->
+  <!-- Automation           -->
+  <!-- ==================== -->
+  <rect class="box-auto" x="240" y="420" width="570" height="120" />
+  <text class="text-auto" x="525" y="445" text-anchor="middle">Automation (phone speaker only)</text>
 
-  <!-- Vertical arrow from MediaSession to AudioService -->
-  <line class="arrow" x1="605" y1="245" x2="605" y2="295" />
+  <rect class="box-deep" x="260" y="458" width="250" height="65" style="stroke: #38e89a;" />
+  <text class="text-item" x="385" y="478" text-anchor="middle" style="fill: #d0d0d0;">BluetoothAutoPlayReceiver</text>
+  <text class="text-item" x="385" y="498" text-anchor="middle">Auto-play on BT connect</text>
+  <text class="text-item" x="385" y="513" text-anchor="middle">Auto-stop on BT disconnect</text>
 
-  <!-- Horizontal arrow from navigator.mediaSession to AudioService -->
-  <line class="arrow" x1="245" y1="375" x2="445" y2="375" />
+  <rect class="box-deep" x="540" y="458" width="250" height="65" style="stroke: #38e89a;" />
+  <text class="text-item" x="665" y="478" text-anchor="middle" style="fill: #d0d0d0;">NetworkChangeMonitor</text>
+  <text class="text-item" x="665" y="498" text-anchor="middle">Auto-resume on WiFi/LTE switch</text>
+  <text class="text-item" x="665" y="513" text-anchor="middle">Retry with WebView reload</text>
+
+  <!-- ==================== -->
+  <!-- ARROWS               -->
+  <!-- ==================== -->
+
+  <!-- MA Server ↔ WebView (WebSocket connections) -->
+  <line class="arrow-ext-both" x1="180" y1="55" x2="237" y2="55" />
+  <line class="arrow-ext-both" x1="180" y1="100" x2="237" y2="100" />
+  <text class="text-small" x="208" y="48" text-anchor="middle" style="fill: #e8a838;">API</text>
+  <text class="text-small" x="208" y="112" text-anchor="middle" style="fill: #e8a838;">Audio</text>
+
+  <!-- WebView → MediaSession (JS Bridge) -->
+  <line class="arrow-both" x1="503" y1="155" x2="547" y2="155" />
+  <text class="bridge-text" x="525" y="147" text-anchor="middle">@JS</text>
+
+  <!-- MediaSession → AudioService -->
+  <line class="arrow" x1="685" y1="268" x2="685" y2="287" />
+
+  <!-- Automation → WebView (triggers reload/play) -->
+  <line class="arrow-auto" x1="370" y1="420" x2="370" y2="268" />
+  <text class="text-small" x="380" y="350" style="fill: #38e89a;">triggers</text>
+  <text class="text-small" x="380" y="363" style="fill: #38e89a;">play/reload</text>
+
+  <!-- JS Bridge feeds state to Automation -->
+  <line class="arrow-auto" x1="310" y1="268" x2="310" y2="420" />
+  <text class="text-small" x="260" y="350" style="fill: #38e89a;">connection</text>
+  <text class="text-small" x="260" y="363" style="fill: #38e89a;">state</text>
 
 </svg>

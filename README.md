@@ -57,52 +57,22 @@ You can access Music Assistant from any browser, but a native Android app offers
 
 ## Architecture
 
-MassDroid uses a JavaScript interceptor bridge to connect the Music Assistant PWA with Android's native MediaSession API:
+MassDroid hosts the Music Assistant PWA inside a WebView and injects a JavaScript bridge layer to connect it with Android's native APIs.
 
 <p align="center">
   <img src="docs/architecture.svg" alt="MassDroid Architecture" width="700">
 </p>
 
-### How the Bridge Works
+### Components
 
-1. **JavaScript Injection** – On page load, MassDroid injects a JavaScript interceptor that hooks into `navigator.mediaSession`.
-
-2. **Metadata Flow (PWA → Android)**:
-   ```
-   PWA updates navigator.mediaSession.metadata
-        ↓
-   JS Interceptor captures the change
-        ↓
-   AndroidMediaSession.updateMetadata() called via @JavascriptInterface
-        ↓
-   Native MediaSession + Notification updated
-   ```
-
-3. **Playback Control Flow (Android → PWA)**:
-   ```
-   User taps play on Bluetooth/notification
-        ↓
-   MediaSession callback triggered
-        ↓
-   executeMediaCommand() calls JavaScript
-        ↓
-   window.musicPlayer.play() invokes PWA handler
-   ```
-
-4. **Position/Seek Flow**:
-   ```
-   PWA calls navigator.mediaSession.setPositionState()
-        ↓
-   JS Interceptor captures position data
-        ↓
-   AndroidMediaSession.updatePositionState() updates progress bar
-
-   User seeks via notification
-        ↓
-   MediaSession.onSeekTo() callback
-        ↓
-   window.musicPlayer.seekTo(position) called
-   ```
+| Component | Role |
+|-----------|------|
+| **MA Server** | Music Assistant backend, communicates via two WebSocket connections: API (commands, player events) and SendSpin (audio streaming). |
+| **WebView** | Runs the full PWA UI. The built-in [SendSpin](https://github.com/music-assistant/sendspin) client handles audio playback to the phone speaker. |
+| **JS Bridge** | Five injected scripts that intercept `navigator.mediaSession`, hook WebSocket connections, manage API commands, and track player selection — forwarding state to Android via `@JavascriptInterface`. |
+| **MediaSession** | Exposes playback controls to the lock screen, notification shade, Bluetooth/car stereo, and Wear OS. Includes a seekable progress bar. |
+| **AudioService** | Foreground service that keeps playback alive in the background and displays a MediaStyle notification with album artwork. |
+| **Automation** | `BluetoothAutoPlayReceiver` auto-starts/stops on BT connect/disconnect. `NetworkChangeMonitor` auto-resumes after WiFi/LTE switches. Both scoped to phone speaker only — external players (Sonos, Chromecast, etc.) are never affected. |
 
 ## Installation
 
