@@ -8,8 +8,6 @@ import android.media.AudioAttributes
 import android.media.AudioManager
 import android.media.AudioPlaybackConfiguration
 import android.os.SystemClock
-import android.telephony.TelephonyCallback
-import android.telephony.TelephonyManager
 import android.content.Intent
 import android.content.ServiceConnection
 import android.content.SharedPreferences
@@ -93,13 +91,10 @@ class MainActivity : AppCompatActivity(),
     private var playStartTime = 0L  // To ignore our own Chromium AudioContext startup
     private var lastPauseTime = 0L  // When playback last transitioned to paused
 
-    // Phone call detection
-    private lateinit var telephonyManager: TelephonyManager
-    private var telephonyCallback: TelephonyCallback? = null  // Android 12+
-    @Suppress("DEPRECATION")
-    private var phoneStateListener: android.telephony.PhoneStateListener? = null  // Pre-Android 12
+    // Voice call detection (via AudioPlaybackCallback, no permission needed)
     @Volatile
-    private var pausedDueToPhoneCall = false
+    private var pausedDueToVoiceCall = false
+    private var voiceCallEndRunnable: Runnable? = null  // Debounce for voice call end
 
     // Position state tracking (internal for WeakReference access from MediaMetadataInterface)
     internal var currentDurationMs: Long = 0
@@ -263,9 +258,6 @@ class MainActivity : AppCompatActivity(),
         // Initialize audio manager
         audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
         registerAudioPlaybackCallback()
-
-        // Initialize telephony manager for phone call detection
-        telephonyManager = getSystemService(Context.TELEPHONY_SERVICE) as TelephonyManager
 
         // Setup views
         setupViews()
@@ -609,12 +601,6 @@ class MainActivity : AppCompatActivity(),
             }
         }
 
-        // Phone state permission for pausing during calls
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_PHONE_STATE)
-            != PackageManager.PERMISSION_GRANTED) {
-            permissionsNeeded.add(Manifest.permission.READ_PHONE_STATE)
-        }
-
         if (permissionsNeeded.isNotEmpty()) {
             Log.i(TAG, "Requesting permissions: ${permissionsNeeded.joinToString()}")
             ActivityCompat.requestPermissions(
@@ -640,11 +626,6 @@ class MainActivity : AppCompatActivity(),
             registerBluetoothReceiver()
         }
 
-        // Setup phone call listener (needs READ_PHONE_STATE)
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_PHONE_STATE)
-            == PackageManager.PERMISSION_GRANTED) {
-            registerPhoneCallListener()
-        }
     }
 
     private fun registerBluetoothReceiver() {
@@ -1820,18 +1801,65 @@ class MainActivity : AppCompatActivity(),
 
     /**
      * Monitor other apps' audio playback via AudioPlaybackCallback (standard Android API).
-     * Chromium's WebView doesn't yield audio focus on its own for Web Audio API,
-     * so we detect when another media app starts and pause via WebSocket.
+     * Handles two cases:
+     * 1. Media apps (Deezer, YouTube etc.) — yield and stay paused
+     * 2. Voice calls (phone, WhatsApp, Teams) — pause and auto-resume when call ends
      */
     private fun registerAudioPlaybackCallback() {
         audioPlaybackCallback = object : AudioManager.AudioPlaybackCallback() {
             override fun onPlaybackConfigChanged(configs: MutableList<AudioPlaybackConfiguration>?) {
+                // Debug: log all audio configurations and their usage types
+                val usageSummary = configs?.groupBy { it.audioAttributes.usage }
+                    ?.map { (usage, list) -> "usage=$usage(x${list.size})" }
+                    ?.joinToString(", ") ?: "none"
+                Log.d(TAG, "AudioPlaybackConfigs changed: $usageSummary (total=${configs?.size ?: 0})")
+
                 val mediaCount = configs?.count {
                     it.audioAttributes.usage == AudioAttributes.USAGE_MEDIA
                 } ?: 0
 
-                // Only act when we're playing and past the 3s grace period
-                // (grace period ignores our own Chromium AudioContext startup)
+                val hasVoiceCall = configs?.any {
+                    it.audioAttributes.usage == AudioAttributes.USAGE_VOICE_COMMUNICATION ||
+                    it.audioAttributes.usage == AudioAttributes.USAGE_VOICE_COMMUNICATION_SIGNALLING
+                } ?: false
+                Log.d(TAG, "AudioPlayback: mediaCount=$mediaCount, hasVoiceCall=$hasVoiceCall, isPlaying=$isCurrentlyPlaying")
+
+                // Voice call detection: pause on call start, resume on call end (with debounce)
+                if (hasVoiceCall && !pausedDueToVoiceCall) {
+                    // Cancel any pending "call ended" resume
+                    voiceCallEndRunnable?.let { handler.removeCallbacks(it) }
+                    voiceCallEndRunnable = null
+
+                    val wasPlaying = isCurrentlyPlaying
+                    val recentlyPaused = SystemClock.elapsedRealtime() - lastPauseTime < 3000
+                    if (wasPlaying || recentlyPaused) {
+                        Log.i(TAG, "Voice call detected - pausing (wasPlaying=$wasPlaying, recentlyPaused=$recentlyPaused)")
+                        pausedDueToVoiceCall = true
+                        runOnUiThread {
+                            setWebViewAudioMuted(true)
+                            if (wasPlaying) executeMediaCommand("pause")
+                        }
+                    }
+                } else if (hasVoiceCall && pausedDueToVoiceCall) {
+                    // Still in call — cancel any pending resume (voice config may flicker)
+                    voiceCallEndRunnable?.let { handler.removeCallbacks(it) }
+                    voiceCallEndRunnable = null
+                } else if (!hasVoiceCall && pausedDueToVoiceCall && voiceCallEndRunnable == null) {
+                    // Voice config disappeared — debounce 3s before resuming
+                    // (voice configs flicker during calls, don't resume prematurely)
+                    Log.d(TAG, "Voice call config gone - waiting 3s before resume")
+                    voiceCallEndRunnable = Runnable {
+                        voiceCallEndRunnable = null
+                        if (pausedDueToVoiceCall) {
+                            pausedDueToVoiceCall = false
+                            Log.i(TAG, "Voice call ended (confirmed) - resuming playback")
+                            executeMediaCommand("play")
+                        }
+                    }
+                    handler.postDelayed(voiceCallEndRunnable!!, 3000)
+                }
+
+                // Media app detection: yield when another media app starts
                 val pastGrace = SystemClock.elapsedRealtime() - playStartTime > 3000
                 if (isCurrentlyPlaying && pastGrace && mediaCount > lastKnownMediaConfigCount) {
                     Log.i(TAG, "Other media app detected ($lastKnownMediaConfigCount -> $mediaCount configs) - yielding")
@@ -1842,7 +1870,11 @@ class MainActivity : AppCompatActivity(),
                     }
                 }
 
-                lastKnownMediaConfigCount = mediaCount
+                // Don't lower baseline while playing — audio system may briefly drop configs
+                // during reconfiguration (e.g. phone call starting), causing false 0→1 yields
+                if (!isCurrentlyPlaying || mediaCount >= lastKnownMediaConfigCount) {
+                    lastKnownMediaConfigCount = mediaCount
+                }
             }
         }
         audioManager.registerAudioPlaybackCallback(audioPlaybackCallback!!, handler)
@@ -1868,77 +1900,6 @@ class MainActivity : AppCompatActivity(),
             }
         } catch (e: Exception) {
             Log.e(TAG, "Error setting WebView audio muted=$muted", e)
-        }
-    }
-
-    /**
-     * Register the phone call listener to pause music during calls.
-     * Called after READ_PHONE_STATE permission is granted.
-     */
-    private fun registerPhoneCallListener() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            // Android 12+ uses TelephonyCallback
-            telephonyCallback = object : TelephonyCallback(), TelephonyCallback.CallStateListener {
-                override fun onCallStateChanged(state: Int) {
-                    handleCallStateChanged(state)
-                }
-            }
-            try {
-                telephonyManager.registerTelephonyCallback(
-                    mainExecutor,
-                    telephonyCallback!!
-                )
-                Log.i(TAG, "TelephonyCallback registered for phone call detection")
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to register TelephonyCallback", e)
-            }
-        } else {
-            // Pre-Android 12: Use deprecated PhoneStateListener
-            @Suppress("DEPRECATION")
-            phoneStateListener = object : android.telephony.PhoneStateListener() {
-                @Deprecated("Deprecated in Java")
-                override fun onCallStateChanged(state: Int, phoneNumber: String?) {
-                    handleCallStateChanged(state)
-                }
-            }
-            @Suppress("DEPRECATION")
-            telephonyManager.listen(phoneStateListener, android.telephony.PhoneStateListener.LISTEN_CALL_STATE)
-            Log.i(TAG, "PhoneStateListener registered for phone call detection")
-        }
-    }
-
-    /**
-     * Handle phone call state changes - pause during calls, resume after.
-     */
-    private fun handleCallStateChanged(state: Int) {
-        Log.i(TAG, "Phone call state changed: $state (IDLE=0, RINGING=1, OFFHOOK=2)")
-
-        runOnUiThread {
-            when (state) {
-                TelephonyManager.CALL_STATE_RINGING,
-                TelephonyManager.CALL_STATE_OFFHOOK -> {
-                    // Audio focus loss may pause Chromium BEFORE TelephonyCallback fires,
-                    // so also check if playback was paused very recently (within 3s).
-                    val recentlyPaused = SystemClock.elapsedRealtime() - lastPauseTime < 3000
-                    if ((isCurrentlyPlaying || recentlyPaused) && !pausedDueToPhoneCall) {
-                        Log.i(TAG, "Phone call detected - pausing playback (wasPlaying=$isCurrentlyPlaying, recentlyPaused=$recentlyPaused)")
-                        pausedDueToPhoneCall = true
-                        setWebViewAudioMuted(true)
-                        if (isCurrentlyPlaying) {
-                            executeMediaCommand("pause")
-                        }
-                    }
-                }
-                TelephonyManager.CALL_STATE_IDLE -> {
-                    if (pausedDueToPhoneCall) {
-                        pausedDueToPhoneCall = false
-                        Log.i(TAG, "Phone call ended - resuming playback")
-                        handler.postDelayed({
-                            executeMediaCommand("play")
-                        }, 1000)
-                    }
-                }
-            }
         }
     }
 
@@ -2678,31 +2639,6 @@ class MainActivity : AppCompatActivity(),
 
         // Stop monitoring other apps' playback
         unregisterAudioPlaybackCallback()
-
-        // Unregister telephony callback/listener
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            telephonyCallback?.let {
-                try {
-                    telephonyManager.unregisterTelephonyCallback(it)
-                    Log.d(TAG, "TelephonyCallback unregistered")
-                } catch (e: Exception) {
-                    Log.e(TAG, "Error unregistering TelephonyCallback", e)
-                }
-            }
-            telephonyCallback = null
-        } else {
-            // Pre-Android 12: Unregister PhoneStateListener
-            phoneStateListener?.let {
-                try {
-                    @Suppress("DEPRECATION")
-                    telephonyManager.listen(it, android.telephony.PhoneStateListener.LISTEN_NONE)
-                    Log.d(TAG, "PhoneStateListener unregistered")
-                } catch (e: Exception) {
-                    Log.e(TAG, "Error unregistering PhoneStateListener", e)
-                }
-            }
-            phoneStateListener = null
-        }
 
         // Note: lifecycleScope automatically cancels when Activity is destroyed
 
