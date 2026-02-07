@@ -239,8 +239,18 @@
                         }
                     }
 
-                    if (msg.type === 'stream/stop') {
-                        console.log('[SS-DEBUG] ====== STREAM STOP ======');
+                    // Spec uses stream/end, MA may use stream/stop - handle both
+                    if (msg.type === 'stream/end' || msg.type === 'stream/stop') {
+                        console.log('[SS-DEBUG] ====== STREAM END ======');
+                        console.log('[SS-DEBUG] type:', msg.type);
+                    }
+
+                    // stream/clear = seek operation (server tells client to clear buffers)
+                    if (msg.type === 'stream/clear') {
+                        console.log('[SS-DEBUG] ====== STREAM CLEAR (SEEK) ======');
+                        if (window.AndroidMediaSession && window.AndroidMediaSession.onSendspinSeek) {
+                            window.AndroidMediaSession.onSendspinSeek();
+                        }
                     }
 
                     // Log all messages except time sync
@@ -358,7 +368,8 @@
         return ws;
     };
 
-    // Preserve WebSocket constants
+    // Preserve WebSocket prototype and constants so instanceof checks work
+    window.WebSocket.prototype = OriginalWebSocket.prototype;
     window.WebSocket.CONNECTING = OriginalWebSocket.CONNECTING;
     window.WebSocket.OPEN = OriginalWebSocket.OPEN;
     window.WebSocket.CLOSING = OriginalWebSocket.CLOSING;

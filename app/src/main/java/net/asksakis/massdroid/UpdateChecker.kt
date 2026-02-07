@@ -12,7 +12,7 @@ import android.widget.TextView
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.FileProvider
-import kotlinx.coroutines.CoroutineScope
+import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -51,6 +51,7 @@ class UpdateChecker(private val context: Context) {
 
     suspend fun checkForUpdates(force: Boolean = false): UpdateInfo? {
         return withContext(Dispatchers.IO) {
+            var connection: HttpURLConnection? = null
             try {
                 // Check if we should perform the check
                 if (!force && !shouldCheckForUpdates()) {
@@ -63,7 +64,7 @@ class UpdateChecker(private val context: Context) {
 
                 // Fetch release info from GitHub
                 val url = URL(GITHUB_API_URL)
-                val connection = url.openConnection() as HttpURLConnection
+                connection = url.openConnection() as HttpURLConnection
                 connection.requestMethod = "GET"
                 connection.setRequestProperty("Accept", "application/vnd.github.v3+json")
                 connection.connectTimeout = 10000
@@ -102,6 +103,8 @@ class UpdateChecker(private val context: Context) {
             } catch (e: Exception) {
                 Log.e(TAG, "Error checking for updates", e)
                 null
+            } finally {
+                connection?.disconnect()
             }
         }
     }
@@ -206,7 +209,7 @@ class UpdateChecker(private val context: Context) {
 
         progressDialog.show()
 
-        CoroutineScope(Dispatchers.Main).launch {
+        activity.lifecycleScope.launch {
             val apkFile = downloadUpdateInApp(updateInfo) { progress ->
                 activity.runOnUiThread {
                     progressBar.progress = progress
@@ -230,42 +233,43 @@ class UpdateChecker(private val context: Context) {
 
     private suspend fun downloadUpdateInApp(updateInfo: UpdateInfo, onProgress: (Int) -> Unit): File? {
         return withContext(Dispatchers.IO) {
+            var connection: HttpURLConnection? = null
             try {
                 val url = URL(updateInfo.downloadUrl)
-                val connection = url.openConnection() as HttpURLConnection
+                connection = url.openConnection() as HttpURLConnection
                 connection.connect()
 
                 val fileLength = connection.contentLength
-                val input = BufferedInputStream(connection.inputStream)
-
-                // Save to app's cache directory
                 val outputFile = File(context.cacheDir, "update_${updateInfo.version}.apk")
-                val output = FileOutputStream(outputFile)
 
-                val buffer = ByteArray(4096)
-                var total = 0L
-                var count: Int
+                BufferedInputStream(connection.inputStream).use { input ->
+                    FileOutputStream(outputFile).use { output ->
+                        val buffer = ByteArray(4096)
+                        var total = 0L
+                        var count: Int
 
-                while (input.read(buffer).also { count = it } != -1) {
-                    total += count
-                    output.write(buffer, 0, count)
+                        while (input.read(buffer).also { count = it } != -1) {
+                            total += count
+                            output.write(buffer, 0, count)
 
-                    if (fileLength > 0) {
-                        val progress = (total * 100 / fileLength).toInt()
-                        withContext(Dispatchers.Main) {
-                            onProgress(progress)
+                            if (fileLength > 0) {
+                                val progress = (total * 100 / fileLength).toInt()
+                                withContext(Dispatchers.Main) {
+                                    onProgress(progress)
+                                }
+                            }
                         }
+
+                        output.flush()
                     }
                 }
-
-                output.flush()
-                output.close()
-                input.close()
 
                 outputFile
             } catch (e: Exception) {
                 Log.e(TAG, "Error downloading update", e)
                 null
+            } finally {
+                connection?.disconnect()
             }
         }
     }

@@ -5,8 +5,8 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.content.ComponentName
 import android.media.AudioAttributes
-import android.media.AudioFocusRequest
 import android.media.AudioManager
+import android.media.AudioPlaybackConfiguration
 import android.telephony.TelephonyCallback
 import android.telephony.TelephonyManager
 import android.content.Intent
@@ -83,14 +83,16 @@ class MainActivity : AppCompatActivity(),
     private val isStartingService = AtomicBoolean(false)
     internal val handler = Handler(Looper.getMainLooper())
 
-    // Audio focus handling (pause on phone call, etc.)
+    // Audio manager (playback monitoring, phone call detection)
     private lateinit var audioManager: AudioManager
-    private var audioFocusRequest: AudioFocusRequest? = null
-    private var hasAudioFocus = false
+
+    // Detects when another media app starts playing so we can yield
+    private var audioPlaybackCallback: AudioManager.AudioPlaybackCallback? = null
+    private var mediaConfigCountAtPlayStart = 0
+    private var playbackMonitoringActive = false
     @Volatile
     internal var pausedDueToFocusLoss = false  // Track if we paused due to losing focus
     @Volatile
-    internal var ignoreFocusEvents = false  // Temporarily ignore focus events during startup
 
     // Phone call detection (backup for audio focus)
     private lateinit var telephonyManager: TelephonyManager
@@ -240,62 +242,10 @@ class MainActivity : AppCompatActivity(),
      * Used to guard audio focus events - we should only pause/resume for phone speaker,
      * not for external players like Sonos/Chromecast.
      */
-    private fun isPhonePlayerSelected(): Boolean {
-        val phone = phonePlayerId ?: return true  // If unknown, assume phone (safe default)
-        val selected = selectedPlayerId ?: return true
+    internal fun isPhonePlayerSelected(): Boolean {
+        val selected = selectedPlayerId ?: return true  // No selection yet, assume phone
+        val phone = phonePlayerId ?: return true  // Phone ID unknown, assume phone (safe default)
         return selected == phone
-    }
-
-    private val audioFocusChangeListener = AudioManager.OnAudioFocusChangeListener { focusChange ->
-        Log.i(TAG, "Audio focus changed: $focusChange, ignoreFocusEvents=$ignoreFocusEvents")
-
-        // Ignore focus events during playback startup to avoid race conditions
-        if (ignoreFocusEvents) {
-            Log.i(TAG, "Ignoring focus event during startup grace period")
-            return@OnAudioFocusChangeListener
-        }
-
-        // Audio focus only matters for the phone speaker (SendSpin).
-        // External players (Sonos, Chromecast) are not affected by phone audio focus.
-        if (!isPhonePlayerSelected()) {
-            Log.i(TAG, "External player selected (${selectedPlayerName}) - ignoring audio focus change")
-            hasAudioFocus = focusChange == AudioManager.AUDIOFOCUS_GAIN
-            return@OnAudioFocusChangeListener
-        }
-
-        when (focusChange) {
-            AudioManager.AUDIOFOCUS_LOSS -> {
-                // Permanent loss - another app took over (e.g., opened Spotify)
-                Log.i(TAG, "Audio focus LOST permanently - pausing playback")
-                hasAudioFocus = false
-                pausedDueToFocusLoss = true
-                executeMediaCommand("pause")
-            }
-            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> {
-                // Temporary loss - phone call, navigation announcement, etc.
-                Log.i(TAG, "Audio focus LOST transiently (phone call?) - pausing playback")
-                hasAudioFocus = false
-                if (isCurrentlyPlaying) {
-                    pausedDueToFocusLoss = true
-                    executeMediaCommand("pause")
-                }
-            }
-            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> {
-                // Can duck (lower volume) - notifications, navigation, etc.
-                // Don't pause for duck events - just let the system lower volume
-                Log.i(TAG, "Audio focus CAN_DUCK - ignoring (letting system handle volume)")
-            }
-            AudioManager.AUDIOFOCUS_GAIN -> {
-                // Focus regained - phone call ended, etc.
-                Log.i(TAG, "Audio focus GAINED")
-                hasAudioFocus = true
-                if (pausedDueToFocusLoss) {
-                    Log.i(TAG, "Resuming playback after focus regained")
-                    pausedDueToFocusLoss = false
-                    executeMediaCommand("play")
-                }
-            }
-        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -309,8 +259,15 @@ class MainActivity : AppCompatActivity(),
         // Restore saved client certificate alias
         clientCertAlias = preferencesHelper.clientCertAlias
 
+        // Restore persisted phone player ID (needed before audio focus events fire)
+        phonePlayerId = preferencesHelper.phonePlayerId
+        Log.d(TAG, "Restored phonePlayerId from prefs: $phonePlayerId")
+
         // Initialize audio manager for audio focus handling
         audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+
+        // Monitor other apps' playback to yield audio focus when needed
+        registerAudioPlaybackCallback()
 
         // Initialize telephony manager for phone call detection
         telephonyManager = getSystemService(Context.TELEPHONY_SERVICE) as TelephonyManager
@@ -733,11 +690,35 @@ class MainActivity : AppCompatActivity(),
                         return@checkIfPhoneIsActivePlayer
                     }
 
-                    // Phone is not playing (even if Sonos is) - reload and start playback
-                    Log.i(TAG, "BT connected - phone not playing, reloading for auto-play")
-                    pendingBluetoothAutoPlayDevice = deviceName
-                    Toast.makeText(this, "Connecting $deviceName...", Toast.LENGTH_SHORT).show()
-                    webView.reload()
+                    // Phone is not playing - select phone speaker and start playback
+                    // Skip reload only if app is in foreground AND WebSocket is alive
+                    val isInForeground = lifecycle.currentState.isAtLeast(androidx.lifecycle.Lifecycle.State.RESUMED)
+
+                    if (!isInForeground) {
+                        // App in background - WebSocket likely stale, reload
+                        Log.i(TAG, "BT connected - app in background, reloading for auto-play")
+                        pendingBluetoothAutoPlayDevice = deviceName
+                        Toast.makeText(this, "Connecting $deviceName...", Toast.LENGTH_SHORT).show()
+                        webView.reload()
+                        return@checkIfPhoneIsActivePlayer
+                    }
+
+                    webView.evaluateJavascript(
+                        "(window.MaWebSocket && window.MaWebSocket.isConnected()) ? 'connected' : 'disconnected'"
+                    ) { result ->
+                        if (result.contains("connected")) {
+                            // Foreground + WebSocket alive - select phone and play directly
+                            Log.i(TAG, "BT connected - foreground + WebSocket alive, selecting phone + play (no reload)")
+                            pendingBluetoothAutoPlayDevice = deviceName
+                            selectPhoneAndPlay(deviceName)
+                        } else {
+                            // WebSocket stale - need full reload
+                            Log.i(TAG, "BT connected - WebSocket stale, reloading for auto-play")
+                            pendingBluetoothAutoPlayDevice = deviceName
+                            Toast.makeText(this, "Connecting $deviceName...", Toast.LENGTH_SHORT).show()
+                            webView.reload()
+                        }
+                    }
                 }
             },
             onBluetoothAudioDisconnected = { deviceName ->
@@ -782,7 +763,12 @@ class MainActivity : AppCompatActivity(),
         )
 
         try {
-            registerReceiver(bluetoothReceiver, BluetoothAutoPlayReceiver.getIntentFilter())
+            ContextCompat.registerReceiver(
+                this,
+                bluetoothReceiver,
+                BluetoothAutoPlayReceiver.getIntentFilter(),
+                ContextCompat.RECEIVER_EXPORTED
+            )
             Log.i(TAG, "Bluetooth auto-play receiver registered")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to register Bluetooth receiver", e)
@@ -880,6 +866,10 @@ class MainActivity : AppCompatActivity(),
 
     @SuppressLint("SetJavaScriptEnabled")
     private fun setupWebView() {
+        // Start with WebView audio muted to prevent Chromium from stealing audio focus.
+        // Will be unmuted when phone speaker playback starts.
+        setWebViewAudioMuted(true)
+
         webView.settings.apply {
             javaScriptEnabled = true
             domStorageEnabled = true
@@ -1022,6 +1012,9 @@ class MainActivity : AppCompatActivity(),
                 if (clientCertAlias != null) {
                     Log.w(TAG, "SSL error with saved certificate - clearing alias and retrying")
                     clearSavedCertificateAlias()
+
+                    // Cancel this request before reloading
+                    handler?.cancel()
 
                     // Reload the page to trigger new certificate prompt
                     runOnUiThread {
@@ -1374,7 +1367,7 @@ class MainActivity : AppCompatActivity(),
         }
 
         val intent = Intent(this, AudioService::class.java)
-        startService(intent)
+        ContextCompat.startForegroundService(this, intent)
         bindService(intent, serviceConnection, BIND_AUTO_CREATE)
         Log.d(TAG, "AudioService started and binding")
     }
@@ -1432,7 +1425,9 @@ class MainActivity : AppCompatActivity(),
 
     /**
      * Execute media command via Music Assistant WebSocket API.
-     * This controls ANY player (Sonos, Chromecast, local SendSpin, etc.)
+     * Always targets the phone speaker via phonePlayerId, regardless of which
+     * player is selected in the MA UI. Also updates MediaSession immediately
+     * so notification controls stay responsive even when an external player is selected.
      */
     private fun executeMediaCommand(command: String) {
         val maCommand = when (command) {
@@ -1444,12 +1439,19 @@ class MainActivity : AppCompatActivity(),
             else -> return
         }
 
-        // Clean, simple script using MaWebSocket manager
+        // Always target phone speaker for native controls (notification, BT, lock screen).
+        // The MA UI handles its own player selection through the WebView.
+        val playerArg = phonePlayerId?.let { "'$it'" } ?: ""
+
+        // Ensure WebView can execute JS (timers may be paused in background battery saving)
+        if (command == "play") {
+            webView.resumeTimers()
+        }
+
         val script = """
             (function() {
-                // Try MaWebSocket first (controls any player including Sonos)
                 if (window.MaWebSocket && window.MaWebSocket.isConnected()) {
-                    const result = window.MaWebSocket.$maCommand();
+                    const result = window.MaWebSocket.$maCommand($playerArg);
                     return result ? 'ma_websocket' : 'ma_websocket_failed';
                 }
 
@@ -1465,7 +1467,29 @@ class MainActivity : AppCompatActivity(),
         """.trimIndent()
 
         webView.evaluateJavascript(script) { result ->
-            Log.d(TAG, "Media command '$command' -> $result")
+            Log.d(TAG, "Media command '$command' (phone speaker) -> $result")
+        }
+
+        // Update MediaSession/AudioService immediately for play/pause.
+        // When an external player is selected, the JS callback won't fire for
+        // phone speaker state, so we update directly to keep notification in sync.
+        when (command) {
+            "play" -> {
+                isCurrentlyPlaying = true
+                setWebViewAudioMuted(false)
+                snapshotOtherMediaApps()
+                updatePlaybackState(PlaybackStateCompat.STATE_PLAYING, currentPositionMs)
+                pendingIsPlaying = true
+                audioService?.updatePlaybackState(true)
+            }
+            "pause" -> {
+                isCurrentlyPlaying = false
+                setWebViewAudioMuted(true)
+                playbackMonitoringActive = false
+                updatePlaybackState(PlaybackStateCompat.STATE_PAUSED, currentPositionMs)
+                pendingIsPlaying = false
+                audioService?.updatePlaybackState(false)
+            }
         }
     }
 
@@ -1758,11 +1782,12 @@ class MainActivity : AppCompatActivity(),
      */
     private fun executeSeekCommand(positionMs: Long) {
         val positionSec = positionMs / 1000.0
+        val playerArg = phonePlayerId?.let { ", '$it'" } ?: ""
+
         val script = """
             (function() {
-                // Try MaWebSocket first
                 if (window.MaWebSocket && window.MaWebSocket.isConnected()) {
-                    const result = window.MaWebSocket.seek($positionSec);
+                    const result = window.MaWebSocket.seek($positionSec$playerArg);
                     return result ? 'ma_seek' : 'ma_seek_failed';
                 }
 
@@ -1777,7 +1802,7 @@ class MainActivity : AppCompatActivity(),
         """.trimIndent()
 
         webView.evaluateJavascript(script) { result ->
-            Log.d(TAG, "Seek command -> $result")
+            Log.d(TAG, "Seek command (phone speaker) -> $result")
         }
     }
 
@@ -1797,65 +1822,82 @@ class MainActivity : AppCompatActivity(),
     }
 
     /**
-     * Request audio focus when starting playback.
-     * This ensures we play nicely with other apps and pause for phone calls.
+     * Register AudioPlaybackCallback to detect when other media apps start playing.
+     * When a new app is detected, we pause our MA playback so Chromium's internal
+     * AudioFocusDelegate releases focus naturally (no audio = no re-request).
      */
-    internal fun requestAudioFocus(): Boolean {
-        if (hasAudioFocus) {
-            Log.d(TAG, "Already have audio focus")
-            return true
+    private fun registerAudioPlaybackCallback() {
+        audioPlaybackCallback = object : AudioManager.AudioPlaybackCallback() {
+            override fun onPlaybackConfigChanged(configs: MutableList<AudioPlaybackConfiguration>?) {
+                handlePlaybackConfigChanged(configs)
+            }
         }
+        audioManager.registerAudioPlaybackCallback(audioPlaybackCallback!!, handler)
+        Log.d(TAG, "AudioPlaybackCallback registered")
+    }
 
-        val result: Int
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            // Android 8.0+ uses AudioFocusRequest
-            val focusRequest = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
-                .setAudioAttributes(
-                    AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_MEDIA)
-                        .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
-                        .build()
-                )
-                .setOnAudioFocusChangeListener(audioFocusChangeListener, handler)
-                .setWillPauseWhenDucked(true) // We'll pause instead of ducking
-                .build()
-
-            audioFocusRequest = focusRequest
-            result = audioManager.requestAudioFocus(focusRequest)
-        } else {
-            // Pre-Android 8.0
-            @Suppress("DEPRECATION")
-            result = audioManager.requestAudioFocus(
-                audioFocusChangeListener,
-                AudioManager.STREAM_MUSIC,
-                AudioManager.AUDIOFOCUS_GAIN
-            )
+    private fun unregisterAudioPlaybackCallback() {
+        audioPlaybackCallback?.let {
+            audioManager.unregisterAudioPlaybackCallback(it)
         }
-
-        hasAudioFocus = (result == AudioManager.AUDIOFOCUS_REQUEST_GRANTED)
-        Log.i(TAG, "Audio focus requested: ${if (hasAudioFocus) "GRANTED" else "DENIED"}")
-        return hasAudioFocus
+        audioPlaybackCallback = null
     }
 
     /**
-     * Abandon audio focus when stopping playback.
+     * Snapshot active media playback count after a grace period.
+     * The delay lets Chromium's AudioContext start generating audio first,
+     * so the baseline includes OUR playback. Without this, we'd detect
+     * our own Chromium audio start as "another app" and immediately pause.
      */
-    internal fun abandonAudioFocus() {
-        if (!hasAudioFocus) {
-            return
-        }
+    internal fun snapshotOtherMediaApps() {
+        playbackMonitoringActive = false
+        handler.postDelayed({
+            if (!isCurrentlyPlaying) return@postDelayed
+            mediaConfigCountAtPlayStart = audioManager.activePlaybackConfigurations
+                .count { it.audioAttributes.usage == AudioAttributes.USAGE_MEDIA }
+            playbackMonitoringActive = true
+            Log.d(TAG, "Baseline media config count: $mediaConfigCountAtPlayStart (monitoring active)")
+        }, 2000)
+    }
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            audioFocusRequest?.let {
-                audioManager.abandonAudioFocusRequest(it)
+    private fun handlePlaybackConfigChanged(configs: MutableList<AudioPlaybackConfiguration>?) {
+        // Only yield when phone speaker is actively playing AND monitoring is armed.
+        if (!playbackMonitoringActive || !isCurrentlyPlaying) return
+
+        val mediaConfigs = configs?.filter {
+            it.audioAttributes.usage == AudioAttributes.USAGE_MEDIA
+        } ?: emptyList()
+
+        if (mediaConfigs.size > mediaConfigCountAtPlayStart) {
+            // Log all configs for debugging
+            mediaConfigs.forEach { config ->
+                Log.d(TAG, "  Media config: usage=${config.audioAttributes.usage} " +
+                    "contentType=${config.audioAttributes.contentType}")
             }
-        } else {
-            @Suppress("DEPRECATION")
-            audioManager.abandonAudioFocus(audioFocusChangeListener)
+            Log.i(TAG, "New media app detected (${mediaConfigs.size} > baseline $mediaConfigCountAtPlayStart) - yielding")
+            playbackMonitoringActive = false
+            runOnUiThread {
+                setWebViewAudioMuted(true)
+                executeMediaCommand("pause")
+            }
         }
+    }
 
-        hasAudioFocus = false
-        Log.i(TAG, "Audio focus abandoned")
+    /**
+     * Mute/unmute WebView audio to control Chromium's internal AudioFocusDelegate.
+     * When muted, Chromium releases its audio focus so other apps can play.
+     */
+    internal fun setWebViewAudioMuted(muted: Boolean) {
+        try {
+            if (androidx.webkit.WebViewFeature.isFeatureSupported(androidx.webkit.WebViewFeature.MUTE_AUDIO)) {
+                androidx.webkit.WebViewCompat.setAudioMuted(webView, muted)
+                Log.d(TAG, "WebView audio ${if (muted) "muted" else "unmuted"}")
+            } else {
+                Log.w(TAG, "WebView audio muting not supported")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error setting WebView audio muted=$muted", e)
+        }
     }
 
     /**
@@ -2221,6 +2263,9 @@ class MainActivity : AppCompatActivity(),
             Log.i(TAG, "========================================")
 
             activity.runOnUiThread {
+                // Only update MediaSession/notification for phone speaker
+                if (!activity.isPhonePlayerSelected()) return@runOnUiThread
+
                 Log.d(TAG, "Running metadata update on UI thread...")
 
                 // Update MediaSession metadata for Bluetooth/system controls
@@ -2276,33 +2321,27 @@ class MainActivity : AppCompatActivity(),
             activity.runOnUiThread {
                 val isPlaying = state == "playing"
 
-                // Track playback state for network change detection
+                // External player selected: don't update MediaSession, don't mute.
+                // The phone speaker may still be playing in the background while
+                // the user controls another player (e.g. Sonos) from the MA UI.
+                if (!activity.isPhonePlayerSelected()) {
+                    Log.d(TAG, "External player selected - preserving phone speaker state")
+                    return@runOnUiThread
+                }
+
+                // Phone speaker: track state and update MediaSession
                 val wasPlaying = activity.isCurrentlyPlaying
                 activity.isCurrentlyPlaying = isPlaying
 
-                // NOTE: Auto-resume success is ONLY detected via onSendspinStreamStart()
-                // Do NOT use playback state change as it causes false positives - server reports
-                // "playing" before SendSpin actually streams audio to the phone.
-                // The retry logic will handle cases where stream/start is not received.
-
-                // Handle audio focus based on playback state
+                // Snapshot other media apps when playback starts, so we only
+                // yield to NEW apps, not ones already playing when we started.
                 if (isPlaying && !wasPlaying) {
-                    // Starting playback - request audio focus
-                    // Don't set pausedDueToFocusLoss here - user initiated playback
-                    activity.pausedDueToFocusLoss = false
-
-                    // Ignore focus events for 2 seconds to avoid startup race conditions
-                    activity.ignoreFocusEvents = true
-                    activity.handler.postDelayed({
-                        activity.ignoreFocusEvents = false
-                        Log.d(TAG, "Audio focus grace period ended")
-                    }, 2000)
-
-                    activity.requestAudioFocus()
-                } else if (!isPlaying && wasPlaying && !activity.pausedDueToFocusLoss) {
-                    // User stopped playback (not due to focus loss) - abandon audio focus
-                    activity.abandonAudioFocus()
+                    activity.snapshotOtherMediaApps()
                 }
+
+                // Unmute/mute WebView based on playback state.
+                // Audio focus is managed by Chromium's AudioFocusDelegate automatically.
+                activity.setWebViewAudioMuted(!isPlaying)
 
                 val playbackState = if (isPlaying) {
                     PlaybackStateCompat.STATE_PLAYING
@@ -2310,24 +2349,17 @@ class MainActivity : AppCompatActivity(),
                     PlaybackStateCompat.STATE_PAUSED
                 }
 
-                // Store position if provided
                 if (positionMs > 0) {
                     activity.currentPositionMs = positionMs
                 }
 
-                Log.d(TAG, "Playback state update: isPlaying=$isPlaying, position=${activity.currentPositionMs}ms")
+                Log.d(TAG, "Playback state: isPlaying=$isPlaying, position=${activity.currentPositionMs}ms")
 
-                // Update MediaSession state for Bluetooth/system controls
                 activity.updatePlaybackState(playbackState, activity.currentPositionMs)
-
-                // Cache for replay if service binds later
                 activity.pendingIsPlaying = isPlaying
 
-                // Update AudioService notification - CRITICAL for icon sync
                 if (activity.audioServiceBound && activity.audioService != null) {
                     activity.audioService?.updatePlaybackState(isPlaying)
-                } else {
-                    Log.d(TAG, "AudioService not bound - playback state cached for later")
                 }
             }
         }
@@ -2335,13 +2367,31 @@ class MainActivity : AppCompatActivity(),
         @JavascriptInterface
         fun setArtworkBase64(base64Data: String) {
             val activity = activityRef.get() ?: return
+            if (!activity.isPhonePlayerSelected()) return
 
             Log.i(TAG, "setArtworkBase64() called, data length: ${base64Data.length}")
 
             activity.backgroundScope.launch(Dispatchers.IO) {
                 try {
                     val decodedBytes = android.util.Base64.decode(base64Data, android.util.Base64.DEFAULT)
-                    val artwork = BitmapFactory.decodeByteArray(decodedBytes, 0, decodedBytes.size)
+
+                    // Decode with bounds check to prevent OOM on large artwork
+                    val maxSize = 512
+                    val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                    BitmapFactory.decodeByteArray(decodedBytes, 0, decodedBytes.size, options)
+
+                    // Calculate sample size for downsampling
+                    var sampleSize = 1
+                    if (options.outHeight > maxSize || options.outWidth > maxSize) {
+                        val halfH = options.outHeight / 2
+                        val halfW = options.outWidth / 2
+                        while (halfH / sampleSize >= maxSize && halfW / sampleSize >= maxSize) {
+                            sampleSize *= 2
+                        }
+                    }
+
+                    val decodeOptions = BitmapFactory.Options().apply { inSampleSize = sampleSize }
+                    val artwork = BitmapFactory.decodeByteArray(decodedBytes, 0, decodedBytes.size, decodeOptions)
 
                     if (artwork != null) {
                         withContext(Dispatchers.Main) {
@@ -2591,6 +2641,14 @@ class MainActivity : AppCompatActivity(),
 
 
         @JavascriptInterface
+        fun onSendspinSeek() {
+            val activity = activityRef.get() ?: return
+            Log.d(TAG, "SendSpin stream/clear (seek detected)")
+            // Reset position - next position update from server will have the correct value
+            activity.currentPositionMs = 0L
+        }
+
+        @JavascriptInterface
         fun onSendspinDisconnected() {
             Log.i(TAG, "========================================")
             Log.i(TAG, "SendSpin disconnected")
@@ -2615,6 +2673,7 @@ class MainActivity : AppCompatActivity(),
         @JavascriptInterface
         fun updatePositionState(durationMs: Long, positionMs: Long, playbackRate: Float) {
             val activity = activityRef.get() ?: return
+            if (!activity.isPhonePlayerSelected()) return
 
             Log.d(TAG, "updatePositionState: duration=${durationMs}ms, position=${positionMs}ms, rate=$playbackRate")
 
@@ -2667,14 +2726,16 @@ class MainActivity : AppCompatActivity(),
             val activity = activityRef.get() ?: return
             Log.i(TAG, "Phone player ID set: $playerId")
             activity.phonePlayerId = playerId
+            // Persist so it's available immediately on next launch
+            activity.preferencesHelper.phonePlayerId = playerId
         }
     }
 
     override fun onDestroy() {
         super.onDestroy()
 
-        // Abandon audio focus
-        abandonAudioFocus()
+        // Stop playback monitoring
+        unregisterAudioPlaybackCallback()
 
         // Unregister telephony callback/listener
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -2737,6 +2798,17 @@ class MainActivity : AppCompatActivity(),
 
         mediaSession?.release()
         mediaSession = null
+
+        // Destroy WebView to release native resources
+        try {
+            webView.removeJavascriptInterface("AndroidMediaSession")
+            webView.stopLoading()
+            (webView.parent as? android.view.ViewGroup)?.removeView(webView)
+            webView.destroy()
+            Log.d(TAG, "WebView destroyed")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error destroying WebView", e)
+        }
 
         Log.d(TAG, "Media components cleaned up")
     }
