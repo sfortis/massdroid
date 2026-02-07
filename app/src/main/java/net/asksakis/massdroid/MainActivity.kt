@@ -7,6 +7,7 @@ import android.content.ComponentName
 import android.media.AudioAttributes
 import android.media.AudioManager
 import android.media.AudioPlaybackConfiguration
+import android.os.SystemClock
 import android.telephony.TelephonyCallback
 import android.telephony.TelephonyManager
 import android.content.Intent
@@ -83,18 +84,16 @@ class MainActivity : AppCompatActivity(),
     private val isStartingService = AtomicBoolean(false)
     internal val handler = Handler(Looper.getMainLooper())
 
-    // Audio manager (playback monitoring, phone call detection)
+    // Audio manager
     private lateinit var audioManager: AudioManager
 
-    // Detects when another media app starts playing so we can yield
+    // Detect other media apps so we can yield (Chromium's WebView doesn't yield on its own)
     private var audioPlaybackCallback: AudioManager.AudioPlaybackCallback? = null
-    private var mediaConfigCountAtPlayStart = 0
-    private var playbackMonitoringActive = false
-    @Volatile
-    internal var pausedDueToFocusLoss = false  // Track if we paused due to losing focus
-    @Volatile
+    private var lastKnownMediaConfigCount = 0
+    private var playStartTime = 0L  // To ignore our own Chromium AudioContext startup
+    private var lastPauseTime = 0L  // When playback last transitioned to paused
 
-    // Phone call detection (backup for audio focus)
+    // Phone call detection
     private lateinit var telephonyManager: TelephonyManager
     private var telephonyCallback: TelephonyCallback? = null  // Android 12+
     @Suppress("DEPRECATION")
@@ -108,6 +107,8 @@ class MainActivity : AppCompatActivity(),
     internal var currentPlaybackRate: Float = 1.0f
     @Volatile
     internal var isCurrentlyPlaying = false  // Track playback state ourselves
+    @Volatile
+    internal var yieldedToOtherApp = false  // When true, ignore server "playing" to prevent re-unmuting
 
     // Bluetooth auto-play
     private var bluetoothReceiver: BluetoothAutoPlayReceiver? = null
@@ -234,10 +235,6 @@ class MainActivity : AppCompatActivity(),
     }
 
     /**
-     * Audio focus change listener - handles phone calls, other media apps, etc.
-     * When another app requests audio focus (e.g., phone call), we pause playback.
-     */
-    /**
      * Check if the phone speaker (SendSpin) is the currently selected player.
      * Used to guard audio focus events - we should only pause/resume for phone speaker,
      * not for external players like Sonos/Chromecast.
@@ -263,10 +260,8 @@ class MainActivity : AppCompatActivity(),
         phonePlayerId = preferencesHelper.phonePlayerId
         Log.d(TAG, "Restored phonePlayerId from prefs: $phonePlayerId")
 
-        // Initialize audio manager for audio focus handling
+        // Initialize audio manager
         audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
-
-        // Monitor other apps' playback to yield audio focus when needed
         registerAudioPlaybackCallback()
 
         // Initialize telephony manager for phone call detection
@@ -1475,17 +1470,18 @@ class MainActivity : AppCompatActivity(),
         // phone speaker state, so we update directly to keep notification in sync.
         when (command) {
             "play" -> {
+                yieldedToOtherApp = false  // User wants to play - clear yield
                 isCurrentlyPlaying = true
-                setWebViewAudioMuted(false)
-                snapshotOtherMediaApps()
+                playStartTime = SystemClock.elapsedRealtime()
+                setWebViewAudioMuted(false)  // Restore if muted from yield
                 updatePlaybackState(PlaybackStateCompat.STATE_PLAYING, currentPositionMs)
                 pendingIsPlaying = true
                 audioService?.updatePlaybackState(true)
             }
             "pause" -> {
                 isCurrentlyPlaying = false
-                setWebViewAudioMuted(true)
-                playbackMonitoringActive = false
+                // Don't mute here - server will stop streaming naturally via WebSocket
+                // Muting is only done in yield/phone call cases for immediate silence
                 updatePlaybackState(PlaybackStateCompat.STATE_PAUSED, currentPositionMs)
                 pendingIsPlaying = false
                 audioService?.updatePlaybackState(false)
@@ -1821,15 +1817,32 @@ class MainActivity : AppCompatActivity(),
         )
     }
 
+
     /**
-     * Register AudioPlaybackCallback to detect when other media apps start playing.
-     * When a new app is detected, we pause our MA playback so Chromium's internal
-     * AudioFocusDelegate releases focus naturally (no audio = no re-request).
+     * Monitor other apps' audio playback via AudioPlaybackCallback (standard Android API).
+     * Chromium's WebView doesn't yield audio focus on its own for Web Audio API,
+     * so we detect when another media app starts and pause via WebSocket.
      */
     private fun registerAudioPlaybackCallback() {
         audioPlaybackCallback = object : AudioManager.AudioPlaybackCallback() {
             override fun onPlaybackConfigChanged(configs: MutableList<AudioPlaybackConfiguration>?) {
-                handlePlaybackConfigChanged(configs)
+                val mediaCount = configs?.count {
+                    it.audioAttributes.usage == AudioAttributes.USAGE_MEDIA
+                } ?: 0
+
+                // Only act when we're playing and past the 3s grace period
+                // (grace period ignores our own Chromium AudioContext startup)
+                val pastGrace = SystemClock.elapsedRealtime() - playStartTime > 3000
+                if (isCurrentlyPlaying && pastGrace && mediaCount > lastKnownMediaConfigCount) {
+                    Log.i(TAG, "Other media app detected ($lastKnownMediaConfigCount -> $mediaCount configs) - yielding")
+                    yieldedToOtherApp = true
+                    runOnUiThread {
+                        setWebViewAudioMuted(true)
+                        executeMediaCommand("pause")
+                    }
+                }
+
+                lastKnownMediaConfigCount = mediaCount
             }
         }
         audioManager.registerAudioPlaybackCallback(audioPlaybackCallback!!, handler)
@@ -1837,50 +1850,8 @@ class MainActivity : AppCompatActivity(),
     }
 
     private fun unregisterAudioPlaybackCallback() {
-        audioPlaybackCallback?.let {
-            audioManager.unregisterAudioPlaybackCallback(it)
-        }
+        audioPlaybackCallback?.let { audioManager.unregisterAudioPlaybackCallback(it) }
         audioPlaybackCallback = null
-    }
-
-    /**
-     * Snapshot active media playback count after a grace period.
-     * The delay lets Chromium's AudioContext start generating audio first,
-     * so the baseline includes OUR playback. Without this, we'd detect
-     * our own Chromium audio start as "another app" and immediately pause.
-     */
-    internal fun snapshotOtherMediaApps() {
-        playbackMonitoringActive = false
-        handler.postDelayed({
-            if (!isCurrentlyPlaying) return@postDelayed
-            mediaConfigCountAtPlayStart = audioManager.activePlaybackConfigurations
-                .count { it.audioAttributes.usage == AudioAttributes.USAGE_MEDIA }
-            playbackMonitoringActive = true
-            Log.d(TAG, "Baseline media config count: $mediaConfigCountAtPlayStart (monitoring active)")
-        }, 2000)
-    }
-
-    private fun handlePlaybackConfigChanged(configs: MutableList<AudioPlaybackConfiguration>?) {
-        // Only yield when phone speaker is actively playing AND monitoring is armed.
-        if (!playbackMonitoringActive || !isCurrentlyPlaying) return
-
-        val mediaConfigs = configs?.filter {
-            it.audioAttributes.usage == AudioAttributes.USAGE_MEDIA
-        } ?: emptyList()
-
-        if (mediaConfigs.size > mediaConfigCountAtPlayStart) {
-            // Log all configs for debugging
-            mediaConfigs.forEach { config ->
-                Log.d(TAG, "  Media config: usage=${config.audioAttributes.usage} " +
-                    "contentType=${config.audioAttributes.contentType}")
-            }
-            Log.i(TAG, "New media app detected (${mediaConfigs.size} > baseline $mediaConfigCountAtPlayStart) - yielding")
-            playbackMonitoringActive = false
-            runOnUiThread {
-                setWebViewAudioMuted(true)
-                executeMediaCommand("pause")
-            }
-        }
     }
 
     /**
@@ -1946,67 +1917,25 @@ class MainActivity : AppCompatActivity(),
             when (state) {
                 TelephonyManager.CALL_STATE_RINGING,
                 TelephonyManager.CALL_STATE_OFFHOOK -> {
-                    // Phone is ringing or in a call - pause if playing
-                    if (!pausedDueToPhoneCall) {
-                        Log.i(TAG, "Phone call detected - pausing music via direct JS + muting stream")
+                    // Audio focus loss may pause Chromium BEFORE TelephonyCallback fires,
+                    // so also check if playback was paused very recently (within 3s).
+                    val recentlyPaused = SystemClock.elapsedRealtime() - lastPauseTime < 3000
+                    if ((isCurrentlyPlaying || recentlyPaused) && !pausedDueToPhoneCall) {
+                        Log.i(TAG, "Phone call detected - pausing playback (wasPlaying=$isCurrentlyPlaying, recentlyPaused=$recentlyPaused)")
                         pausedDueToPhoneCall = true
-
-                        // Method 1: Mute the music stream directly via AudioManager
-                        // This works even for WebSocket-based audio like SendSpin
-                        // Using adjustStreamVolume instead of deprecated setStreamMute
-                        audioManager.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_MUTE, 0)
-                        Log.i(TAG, "Music stream muted via AudioManager")
-
-                        // Method 2: Also try to pause via JavaScript
-                        webView.evaluateJavascript("""
-                            (function() {
-                                console.log('[PhoneCall] Pausing audio for phone call...');
-                                if (window.musicPlayer && window.musicPlayer.pause) {
-                                    window.musicPlayer.pause();
-                                    return 'paused_via_musicPlayer';
-                                }
-                                // Fallback: try to pause all audio/video elements
-                                document.querySelectorAll('audio, video').forEach(function(el) {
-                                    el.pause();
-                                });
-                                return 'paused_via_elements';
-                            })();
-                        """.trimIndent()) { result ->
-                            Log.i(TAG, "Phone call pause result: $result")
+                        setWebViewAudioMuted(true)
+                        if (isCurrentlyPlaying) {
+                            executeMediaCommand("pause")
                         }
                     }
                 }
                 TelephonyManager.CALL_STATE_IDLE -> {
-                    // Call ended - resume if we paused for the call
                     if (pausedDueToPhoneCall) {
                         pausedDueToPhoneCall = false
-
-                        // Unmute the music stream
-                        audioManager.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_UNMUTE, 0)
-                        Log.i(TAG, "Phone call ended - music stream unmuted")
-
-                        // Only resume if Bluetooth audio is connected (phone speaker scope)
-                        val isBluetoothAudio = audioManager.isBluetoothA2dpOn || audioManager.isBluetoothScoOn
-                        if (isBluetoothAudio) {
-                            Log.i(TAG, "Bluetooth audio connected - resuming playback")
-                            // Small delay to let the call fully end, then resume playback
-                            handler.postDelayed({
-                                webView.evaluateJavascript("""
-                                    (function() {
-                                        console.log('[PhoneCall] Resuming audio after phone call...');
-                                        if (window.musicPlayer && window.musicPlayer.play) {
-                                            window.musicPlayer.play();
-                                            return 'resumed';
-                                        }
-                                        return 'no_player';
-                                    })();
-                                """.trimIndent()) { result ->
-                                    Log.i(TAG, "Phone call resume result: $result")
-                                }
-                            }, 1000)
-                        } else {
-                            Log.i(TAG, "No Bluetooth audio - skipping resume after phone call")
-                        }
+                        Log.i(TAG, "Phone call ended - resuming playback")
+                        handler.postDelayed({
+                            executeMediaCommand("play")
+                        }, 1000)
                     }
                 }
             }
@@ -2329,19 +2258,32 @@ class MainActivity : AppCompatActivity(),
                     return@runOnUiThread
                 }
 
+                // If we yielded to another app, ignore server "playing" updates
+                // until the server confirms our pause (prevents unmuting loop)
+                if (isPlaying && activity.yieldedToOtherApp) {
+                    Log.d(TAG, "Ignoring server 'playing' - yielded to other app")
+                    return@runOnUiThread
+                }
+                if (!isPlaying) {
+                    activity.yieldedToOtherApp = false  // Server confirmed pause
+                }
+
                 // Phone speaker: track state and update MediaSession
                 val wasPlaying = activity.isCurrentlyPlaying
                 activity.isCurrentlyPlaying = isPlaying
-
-                // Snapshot other media apps when playback starts, so we only
-                // yield to NEW apps, not ones already playing when we started.
+                // Track transitions for grace period and phone call detection
                 if (isPlaying && !wasPlaying) {
-                    activity.snapshotOtherMediaApps()
+                    activity.playStartTime = SystemClock.elapsedRealtime()
+                }
+                if (!isPlaying && wasPlaying) {
+                    activity.lastPauseTime = SystemClock.elapsedRealtime()
                 }
 
-                // Unmute/mute WebView based on playback state.
-                // Audio focus is managed by Chromium's AudioFocusDelegate automatically.
-                activity.setWebViewAudioMuted(!isPlaying)
+                // Unmute on play transition (needed when user starts from MA web UI).
+                // Do NOT mute on pause — server stops streaming naturally, avoids audio clicks.
+                if (isPlaying && !wasPlaying) {
+                    activity.setWebViewAudioMuted(false)
+                }
 
                 val playbackState = if (isPlaying) {
                     PlaybackStateCompat.STATE_PLAYING
@@ -2734,7 +2676,7 @@ class MainActivity : AppCompatActivity(),
     override fun onDestroy() {
         super.onDestroy()
 
-        // Stop playback monitoring
+        // Stop monitoring other apps' playback
         unregisterAudioPlaybackCallback()
 
         // Unregister telephony callback/listener
@@ -2760,12 +2702,6 @@ class MainActivity : AppCompatActivity(),
                 }
             }
             phoneStateListener = null
-        }
-
-        // Make sure audio is unmuted if app closes during a call
-        if (pausedDueToPhoneCall) {
-            audioManager.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_UNMUTE, 0)
-            Log.d(TAG, "Unmuted audio stream on destroy")
         }
 
         // Note: lifecycleScope automatically cancels when Activity is destroyed
