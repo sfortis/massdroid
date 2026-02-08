@@ -8,6 +8,5 @@
     <device-transfer>
         <!-- Allow preferences for device-to-device transfer (same user) -->
         <include domain="sharedpref" path="." />
-        <exclude domain="database" path="." />
     </device-transfer>
 </data-extraction-rules>

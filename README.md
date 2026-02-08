@@ -117,9 +117,13 @@ Access settings from the navigation drawer (hamburger menu):
 | Permission | Purpose |
 |------------|---------|
 | `INTERNET` | Connect to your Music Assistant server |
+| `ACCESS_NETWORK_STATE` | Detect network changes for auto-resume |
+| `WAKE_LOCK` | Keep audio streaming while screen is off |
 | `BLUETOOTH_CONNECT` | Detect Bluetooth audio connections |
 | `FOREGROUND_SERVICE` | Keep playing music in background |
+| `FOREGROUND_SERVICE_MEDIA_PLAYBACK` | Media playback foreground service type (Android 14+) |
 | `POST_NOTIFICATIONS` | Show media notification with controls |
+| `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` | Prevent OS from killing background playback |
 | `REQUEST_INSTALL_PACKAGES` | Install app updates from GitHub |
 
 ## Troubleshooting
