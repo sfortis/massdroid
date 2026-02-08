@@ -128,20 +128,8 @@ Access settings from the navigation drawer (hamburger menu):
 
 ## Troubleshooting
 
-**Media controls not responding?**
-- Ensure the Music Assistant web player is active
-- Check that notification permissions are granted
-
-**No audio after network change?**
-- Enable "Auto-resume on Network" in settings
-- The app will automatically reconnect when network is restored
-
-**Bluetooth auto-play not working?**
-- Enable "Auto-play on Bluetooth" in settings
-- Grant Bluetooth permissions when prompted
-
 **Certificate issues after renewal?**
-- Go to Settings → Advanced → Clear Certificate & Cache
+- Go to Settings > Advanced > Clear Certificate & Cache
 - Restart the app and select the new certificate when prompted
 
 ## Contributing
