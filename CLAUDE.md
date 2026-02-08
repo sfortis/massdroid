@@ -21,25 +21,32 @@ The app uses the **WebView's built-in SendSpin client** for audio playback. The 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                        MainActivity                              │
-│  ┌─────────────────┐       ┌────────────────────────────────┐   │
-│  │  WebView        │       │     MediaSession               │   │
-│  │  - PWA UI       │       │  - Bluetooth controls          │   │
-│  │  - SendSpin     │◄─────►│  - Lock screen controls        │   │
-│  │  - Audio output │       │  - Notification controls       │   │
-│  └─────────────────┘       └────────────────────────────────┘   │
-│           │                              │                       │
-│           │ JS Interceptor               │                       │
-│           ▼                              ▼                       │
-│  ┌─────────────────┐       ┌────────────────────────────────┐   │
-│  │ AndroidMedia-   │       │     AudioService               │   │
-│  │ Session (JS)    │──────►│  - Foreground notification     │   │
-│  │ - metadata      │       │  - MediaStyle controls         │   │
-│  │ - playbackState │       │  - Album artwork               │   │
-│  │ - positionState │       └────────────────────────────────┘   │
-│  └─────────────────┘                                            │
-└─────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────┐
+│                           MainActivity                                │
+│  ┌─────────────────┐       ┌────────────────────────────────┐        │
+│  │  WebView        │       │     MediaSession               │        │
+│  │  - PWA UI       │       │  - Bluetooth controls          │        │
+│  │  - SendSpin     │◄─────►│  - Lock screen controls        │        │
+│  │  - Audio output │       │  - Notification controls       │        │
+│  └─────────────────┘       └────────────────────────────────┘        │
+│           │                              │                            │
+│           │ JS Bridge                    │                            │
+│           ▼                              ▼                            │
+│  ┌─────────────────┐       ┌────────────────────────────────┐        │
+│  │ AndroidMedia-   │       │     AudioService               │        │
+│  │ Session (JS)    │──────►│  - Foreground notification     │        │
+│  │ - metadata      │       │  - MediaStyle controls         │        │
+│  │ - playbackState │       │  - Album artwork               │        │
+│  │ - positionState │       └────────────────────────────────┘        │
+│  └─────────────────┘                                                 │
+│                                                                      │
+│  ┌──────────────────────────┐  ┌─────────────────────────────┐       │
+│  │ BluetoothAutoPlayReceiver│  │ NetworkAutoResumeCoordinator │       │
+│  │ - connect/disconnect     │  │ - flow tracking (IDs)        │       │
+│  │ - grace period           │  │ - multi-tier retry           │       │
+│  │ - handoff protection     │  │ - recovery window (120s)     │       │
+│  └──────────────────────────┘  └─────────────────────────────┘       │
+└──────────────────────────────────────────────────────────────────────┘
 ```
 
 ## Core Components
@@ -48,23 +55,24 @@ The app uses the **WebView's built-in SendSpin client** for audio playback. The 
 
 | File | Purpose |
 |------|---------|
-| `MainActivity.kt` | Main entry, WebView setup, MediaSession, JS interface |
+| `MainActivity.kt` | Main entry, WebView setup, MediaSession, JS interface, audio focus, BT handlers |
 | `AudioService.kt` | Foreground service, MediaStyle notification |
-| `BluetoothAutoPlayReceiver.kt` | Detects Bluetooth audio connections for auto-play |
-| `NetworkChangeMonitor.kt` | Monitors network changes for auto-resume playback |
+| `BluetoothAutoPlayReceiver.kt` | Detects Bluetooth audio connect/disconnect for auto-play and auto-stop |
+| `NetworkChangeMonitor.kt` | Monitors network changes, notifies loss/available |
+| `NetworkAutoResumeCoordinator.kt` | Auto-resume state machine: flow tracking, multi-tier retry, recovery window |
 | `PreferencesHelper.kt` | SharedPreferences wrapper for settings |
 | `SettingsActivity.kt` | Settings screen with PreferenceFragment |
-| `UpdateChecker.kt` | GitHub release checker, APK download and install |
+| `UpdateChecker.kt` | GitHub release checker, APK download and install (2h cooldown) |
 
 ### JavaScript Files (`app/src/main/assets/js/`)
 
 | File | Purpose |
 |------|---------|
 | `inject.js` | Entry point, loads other scripts in correct order |
-| `ma-websocket.js` | Music Assistant WebSocket manager for API commands (play/stop/seek) |
+| `ma-websocket.js` | MA API WebSocket manager: play/stop/seek commands, player selection with UI sync |
 | `mediasession-polyfill.js` | Intercepts `navigator.mediaSession` and forwards to Android |
-| `player-selection-observer.js` | Tracks user's selected player in MA UI |
-| `ws-interceptor.js` | Intercepts WebSocket connections, tracks SendSpin state for auto-resume |
+| `player-selection-observer.js` | Tracks user's selected player in MA UI, persists to localStorage |
+| `ws-interceptor.js` | Intercepts WebSocket connections, SendSpin state tracking, disconnect debounce, stale socket guards |
 
 ## Build & Development
 
@@ -77,13 +85,13 @@ The app uses the **WebView's built-in SendSpin client** for audio playback. The 
 
 ```bash
 # Build debug APK
-./gradlew assembleDebug
+bash gradlew assembleDebug
 
 # Clean build (use when getting resource errors)
-./gradlew clean assembleDebug
+bash gradlew clean assembleDebug
 
 # Build release APK
-./gradlew assembleRelease
+bash gradlew assembleRelease
 ```
 
 ## Configuration
@@ -114,7 +122,7 @@ The app uses the **WebView's built-in SendSpin client** for audio playback. The 
 
 ```bash
 # Build debug APK
-./gradlew assembleDebug
+bash gradlew assembleDebug
 
 # Install on device
 adb install -r app/build/outputs/apk/debug/app-debug.apk
