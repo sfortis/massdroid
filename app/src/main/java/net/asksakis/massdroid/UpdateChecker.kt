@@ -34,7 +34,7 @@ class UpdateChecker(private val context: Context) {
     companion object {
         private const val TAG = "UpdateChecker"
         private const val GITHUB_API_URL = "https://api.github.com/repos/sfortis/massdroid/releases/latest"
-        private const val UPDATE_CHECK_INTERVAL = 24 * 60 * 60 * 1000L // 24 hours
+        private const val UPDATE_CHECK_INTERVAL = 2 * 60 * 60 * 1000L // 2 hours
         private const val PREFS_NAME = "update_prefs"
         private const val KEY_LAST_CHECK = "last_update_check"
     }

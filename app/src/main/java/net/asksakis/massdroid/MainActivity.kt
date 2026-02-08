@@ -307,12 +307,12 @@ class MainActivity : AppCompatActivity(),
 
     /**
      * Check for app updates from GitHub releases.
-     * Always checks on app launch to ensure user sees available updates.
+     * Checks on app launch, respecting the cooldown interval in UpdateChecker.
      */
     private fun checkForAppUpdates() {
         val updateChecker = UpdateChecker(this)
         lifecycleScope.launch {
-            val updateInfo = updateChecker.checkForUpdates(force = true)
+            val updateInfo = updateChecker.checkForUpdates(force = false)
             updateInfo?.let {
                 updateChecker.showUpdateDialog(this@MainActivity, it)
             }
@@ -653,7 +653,8 @@ class MainActivity : AppCompatActivity(),
                     return@BluetoothAutoPlayReceiver
                 }
 
-                // Resume WebView timers in case they were paused (battery saving when idle)
+                // Resume WebView in case it was paused (onPause stops JS execution)
+                webView.onResume()
                 webView.resumeTimers()
 
                 // Check if PHONE is actively streaming audio (not just any player playing)
@@ -700,6 +701,10 @@ class MainActivity : AppCompatActivity(),
             onBluetoothAudioDisconnected = { deviceName ->
                 Log.i(TAG, "Bluetooth device disconnected: $deviceName")
 
+                // Prevent network auto-resume from triggering after BT disconnect
+                // (BT disconnect can cause SendSpin reconnect → false auto-resume)
+                wasPlayingBeforeNetworkLoss = false
+
                 // Only stop if currently playing
                 if (!isCurrentlyPlaying) {
                     Log.d(TAG, "Not playing, no need to stop on BT disconnect")
@@ -743,7 +748,7 @@ class MainActivity : AppCompatActivity(),
                 this,
                 bluetoothReceiver,
                 BluetoothAutoPlayReceiver.getIntentFilter(),
-                ContextCompat.RECEIVER_EXPORTED
+                ContextCompat.RECEIVER_NOT_EXPORTED
             )
             Log.i(TAG, "Bluetooth auto-play receiver registered")
         } catch (e: Exception) {
@@ -850,6 +855,9 @@ class MainActivity : AppCompatActivity(),
             javaScriptEnabled = true
             domStorageEnabled = true
             databaseEnabled = true
+            // Security: disable file/content access (not needed for remote PWA)
+            allowFileAccess = false
+            allowContentAccess = false
             // Disable pinch-to-zoom - zoom is controlled via settings
             setSupportZoom(false)
             builtInZoomControls = false
@@ -1805,15 +1813,13 @@ class MainActivity : AppCompatActivity(),
      * 1. Media apps (Deezer, YouTube etc.) — yield and stay paused
      * 2. Voice calls (phone, WhatsApp, Teams) — pause and auto-resume when call ends
      */
+    // Track last logged values to avoid flooding logcat (callback fires hundreds of times/sec during playback)
+    private var lastLoggedMediaCount = -1
+    private var lastLoggedVoiceCall = false
+
     private fun registerAudioPlaybackCallback() {
         audioPlaybackCallback = object : AudioManager.AudioPlaybackCallback() {
             override fun onPlaybackConfigChanged(configs: MutableList<AudioPlaybackConfiguration>?) {
-                // Debug: log all audio configurations and their usage types
-                val usageSummary = configs?.groupBy { it.audioAttributes.usage }
-                    ?.map { (usage, list) -> "usage=$usage(x${list.size})" }
-                    ?.joinToString(", ") ?: "none"
-                Log.d(TAG, "AudioPlaybackConfigs changed: $usageSummary (total=${configs?.size ?: 0})")
-
                 val mediaCount = configs?.count {
                     it.audioAttributes.usage == AudioAttributes.USAGE_MEDIA
                 } ?: 0
@@ -1822,7 +1828,13 @@ class MainActivity : AppCompatActivity(),
                     it.audioAttributes.usage == AudioAttributes.USAGE_VOICE_COMMUNICATION ||
                     it.audioAttributes.usage == AudioAttributes.USAGE_VOICE_COMMUNICATION_SIGNALLING
                 } ?: false
-                Log.d(TAG, "AudioPlayback: mediaCount=$mediaCount, hasVoiceCall=$hasVoiceCall, isPlaying=$isCurrentlyPlaying")
+
+                // Only log when something meaningful changes
+                if (mediaCount != lastLoggedMediaCount || hasVoiceCall != lastLoggedVoiceCall) {
+                    lastLoggedMediaCount = mediaCount
+                    lastLoggedVoiceCall = hasVoiceCall
+                    Log.d(TAG, "AudioPlayback: mediaCount=$mediaCount, hasVoiceCall=$hasVoiceCall, isPlaying=$isCurrentlyPlaying")
+                }
 
                 // Voice call detection: pause on call start, resume on call end (with debounce)
                 if (hasVoiceCall && !pausedDueToVoiceCall) {
@@ -1848,11 +1860,25 @@ class MainActivity : AppCompatActivity(),
                     // Voice config disappeared — debounce 3s before resuming
                     // (voice configs flicker during calls, don't resume prematurely)
                     Log.d(TAG, "Voice call config gone - waiting 3s before resume")
-                    voiceCallEndRunnable = Runnable {
-                        voiceCallEndRunnable = null
-                        if (pausedDueToVoiceCall) {
+                    voiceCallEndRunnable = object : Runnable {
+                        override fun run() {
+                            if (!pausedDueToVoiceCall) {
+                                voiceCallEndRunnable = null
+                                return
+                            }
+                            // Check AudioManager mode — telecom calls keep mode != NORMAL
+                            // even after USAGE_VOICE_COMMUNICATION disappears from configs
+                            val mode = audioManager.mode
+                            if (mode == AudioManager.MODE_IN_CALL ||
+                                mode == AudioManager.MODE_IN_COMMUNICATION ||
+                                mode == AudioManager.MODE_RINGTONE) {
+                                Log.d(TAG, "Voice call still active (audioManager.mode=$mode) - rechecking in 2s")
+                                handler.postDelayed(this, 2000)
+                                return
+                            }
+                            voiceCallEndRunnable = null
                             pausedDueToVoiceCall = false
-                            Log.i(TAG, "Voice call ended (confirmed) - resuming playback")
+                            Log.i(TAG, "Voice call ended (confirmed, mode=$mode) - resuming playback")
                             executeMediaCommand("play")
                         }
                     }
@@ -1903,6 +1929,64 @@ class MainActivity : AppCompatActivity(),
         }
     }
 
+    /**
+     * Auto-select phone speaker ("This Device") in MA web UI when it's the active player.
+     * Clicks the player card programmatically so the UI shows the correct player.
+     */
+    private fun selectPhoneSpeakerInUI() {
+        val playerId = phonePlayerId ?: return
+
+        handler.postDelayed({
+            // Ask the MA server if the phone speaker is actively playing,
+            // and if so, switch our internal tracking to it
+            webView.evaluateJavascript("""
+                (function() {
+                    var playerId = '$playerId';
+                    if (!window.MaWebSocket || !window.MaWebSocket.isConnected()) {
+                        return JSON.stringify({status: 'no_connection'});
+                    }
+
+                    var current = window.MaWebSocket._selectedPlayerId;
+                    if (current === playerId) {
+                        return JSON.stringify({status: 'already_selected'});
+                    }
+
+                    // Query MA server for the phone speaker's actual state
+                    window.MaWebSocket.sendCommand('players/all', {}).then(function(players) {
+                        if (!Array.isArray(players)) return;
+                        var phone = players.find(function(p) { return p.player_id === playerId; });
+                        if (!phone || phone.playback_state !== 'playing') {
+                            console.log('[AutoSelect] Phone speaker state: ' + (phone ? phone.playback_state : 'not_found'));
+                            return;
+                        }
+
+                        // Phone speaker IS playing — switch tracking + UI
+                        var name = phone.display_name || 'This Device';
+                        console.log('[AutoSelect] Switching to: ' + name);
+
+                        // 1. Update our internal tracking (triggers toast via onPlayerSelected)
+                        window.MaWebSocket.setSelectedPlayer(playerId, name);
+                        localStorage.setItem('massdroid_selected_player_id', playerId);
+                        localStorage.setItem('massdroid_selected_player_name', name);
+
+                        // 2. Click the card in the MA UI to update Vue state
+                        var card = document.getElementById(playerId);
+                        if (card) {
+                            console.log('[AutoSelect] Clicking card to update MA frontend');
+                            card.dispatchEvent(new PointerEvent('pointerdown', {bubbles: true, cancelable: true}));
+                            setTimeout(function() {
+                                card.dispatchEvent(new PointerEvent('pointerup', {bubbles: true, cancelable: true}));
+                                card.dispatchEvent(new MouseEvent('click', {bubbles: true, cancelable: true, view: window}));
+                            }, 50);
+                        }
+                    });
+
+                    return JSON.stringify({status: 'checking', currentSelection: current});
+                })();
+            """.trimIndent(), null)
+        }, 1500)
+    }
+
     override fun onResume() {
         super.onResume()
         webView.onResume()
@@ -1917,6 +2001,9 @@ class MainActivity : AppCompatActivity(),
 
         // Check if WebSocket connection is lost and reload if needed
         checkAndReconnectIfNeeded()
+
+        // Auto-select phone speaker in MA UI if it's the active player
+        selectPhoneSpeakerInUI()
 
         // Check if color changed - need to recreate activity
         if (colorBeforePause.isNotEmpty()) {

@@ -1,4 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <full-backup-content>
-    <!-- Exclude specific files or directories from backup if needed -->
+    <!-- Exclude sensitive preferences (server URL, cert alias) from backup -->
+    <exclude domain="sharedpref" path="." />
+    <!-- Exclude WebView data (cookies, local storage with auth tokens) -->
+    <exclude domain="database" path="." />
+    <exclude domain="external" path="." />
 </full-backup-content>
