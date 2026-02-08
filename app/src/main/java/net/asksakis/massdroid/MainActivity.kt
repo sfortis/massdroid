@@ -90,6 +90,8 @@ class MainActivity : AppCompatActivity(),
     private var lastKnownMediaConfigCount = 0
     private var playStartTime = 0L  // To ignore our own Chromium AudioContext startup
     private var lastPauseTime = 0L  // When playback last transitioned to paused
+    @Volatile
+    private var webViewAudioMuted = false
 
     // Voice call detection (via AudioPlaybackCallback, no permission needed)
     @Volatile
@@ -116,7 +118,11 @@ class MainActivity : AppCompatActivity(),
 
     // Bluetooth auto-play after reload (when WebSocket was stale)
     @Volatile
-    private var pendingBluetoothAutoPlayDevice: String? = null
+    private var pendingBluetoothAutoPlayDevice: BluetoothAutoPlayReceiver.BluetoothAudioDevice? = null
+    private var pendingBtDisconnectStopRunnable: Runnable? = null
+    private var pendingBtDisconnectDeviceAddress: String? = null
+    private var btFlowCounter = 0L
+    private lateinit var networkAutoResume: NetworkAutoResumeCoordinator
 
 
     // Back navigation callbacks (OnBackPressedDispatcher)
@@ -147,23 +153,7 @@ class MainActivity : AppCompatActivity(),
     // Track URL for detecting changes after settings
     private var urlBeforeSettings: String = ""
     private var colorBeforePause: String = ""
-    @Volatile
-    internal var wasPlayingBeforeNetworkLoss = false
-    internal var savedPositionMs: Long = 0  // Position saved at moment of network loss
-    internal var savedDurationMs: Long = 0  // Duration saved at moment of network loss
     internal var currentTrackTitle: String = ""  // Current track title for verification
-    internal var savedTrackTitle: String = ""  // Track title saved at moment of network loss
-    @Volatile
-    internal var waitingForStreamStart = false  // True while waiting for auto-resume to complete
-
-    // Timeout runnable for auto-resume (so we can cancel it)
-    internal var autoResumeTimeoutRunnable: Runnable? = null
-
-    // Auto-resume retry tracking
-    internal var autoResumeRetryCount = 0
-    private val MAX_AUTO_RESUME_RETRIES = 5  // Each retry reloads WebView
-    @Volatile
-    internal var primaryAutoResumeActive = false  // Set by onSendspinStabilized to stop fallback
 
     // Use lifecycleScope for automatic cancellation when Activity is destroyed
     // This property provides backwards compatibility for existing code
@@ -182,6 +172,12 @@ class MainActivity : AppCompatActivity(),
     companion object {
         private const val TAG = "MainActivity"
         private const val PERMISSIONS_REQUEST = 100  // Combined permissions request
+        private const val BT_DISCONNECT_GRACE_MS = 3000L
+    }
+
+    private fun nextBtFlowId(prefix: String): String {
+        btFlowCounter++
+        return "BT-$prefix-$btFlowCounter"
     }
 
     // AudioService connection
@@ -264,6 +260,7 @@ class MainActivity : AppCompatActivity(),
         setupToolbar()
         setupNavigationDrawer()
         setupWebView()
+        setupAutoResumeCoordinator()
 
         // Register back navigation callbacks (order matters: last registered = first checked)
         // WebView callback first (lower priority), then drawer callback (higher priority)
@@ -333,249 +330,83 @@ class MainActivity : AppCompatActivity(),
                 Log.i(TAG, "========================================")
                 Log.i(TAG, "Network lost, isCurrentlyPlaying=$isCurrentlyPlaying")
                 Log.i(TAG, "========================================")
-
-                // Save state for potential auto-resume
-                if (isCurrentlyPlaying && preferencesHelper.autoResumeOnNetwork) {
-                    wasPlayingBeforeNetworkLoss = true
-                    savedPositionMs = currentPositionMs
-                    savedDurationMs = currentDurationMs
-                    savedTrackTitle = currentTrackTitle
-                    Log.i(TAG, "Saved state for auto-resume: position=${savedPositionMs}ms, duration=${savedDurationMs}ms, track=$savedTrackTitle")
-                }
-
-                // Force close WebSockets to ensure clean reconnection when network returns
-                // This prevents "zombie" connections that may not trigger proper events
-                runOnUiThread {
-                    Log.i(TAG, "Forcing WebSocket close for clean reconnection...")
-                    webView.evaluateJavascript("""
-                        (function() {
-                            console.log('[NetworkLost] Forcing WebSocket close');
-                            // Close SendSpin WebSocket via exposed function
-                            if (window.closeSendspinSocket) {
-                                window.closeSendspinSocket();
-                            }
-                            // Close MaWebSocket if available
-                            if (window.MaWebSocket && window.MaWebSocket.close) {
-                                window.MaWebSocket.close();
-                            }
-                            return 'closed';
-                        })();
-                    """.trimIndent()) { result ->
-                        Log.i(TAG, "WebSocket close result: $result")
-                    }
-                }
+                networkAutoResume.onNetworkLost(
+                    isCurrentlyPlaying = isCurrentlyPlaying,
+                    autoResumeEnabled = preferencesHelper.autoResumeOnNetwork,
+                    currentPositionMs = currentPositionMs,
+                    currentDurationMs = currentDurationMs,
+                    currentTrackTitle = currentTrackTitle
+                )
             }
 
             override fun onNetworkAvailable() {
                 Log.i(TAG, "========================================")
                 Log.i(TAG, "Network available")
-                Log.i(TAG, "wasPlayingBeforeNetworkLoss=$wasPlayingBeforeNetworkLoss")
+                Log.i(TAG, "wasPlayingBeforeNetworkLoss=${networkAutoResume.wasPlayingBeforeNetworkLoss}")
                 Log.i(TAG, "========================================")
-
-                // Primary: onSendspinStabilized() handles auto-resume when WebSocket reconnects
-                // Fallback: If WebSocket didn't close (TCP survived), trigger a manual check
-                if (wasPlayingBeforeNetworkLoss && preferencesHelper.autoResumeOnNetwork) {
-                    Log.i(TAG, "Scheduling fallback auto-resume check in 5 seconds...")
-                    handler.postDelayed({
-                        // Only trigger fallback if wasPlayingBeforeNetworkLoss is still true
-                        // (it gets cleared by onSendspinStabilized if that path worked)
-                        if (wasPlayingBeforeNetworkLoss && !waitingForStreamStart) {
-                            Log.i(TAG, "Fallback auto-resume: WebSocket didn't reconnect, forcing check...")
-                            triggerFallbackAutoResume()
-                        } else {
-                            Log.d(TAG, "Fallback auto-resume not needed - already handled or in progress")
-                        }
-                    }, 5000)  // Wait 5s for normal WebSocket-based stabilization
-                }
+                networkAutoResume.onNetworkAvailable(preferencesHelper.autoResumeOnNetwork)
             }
         })
 
         networkMonitor?.start()
     }
 
-    /**
-     * Fallback auto-resume when network is restored but WebSocket didn't reconnect.
-     * This handles the case where TCP connection survived the network change.
-     * Waits for SendSpin to be connected before sending play command.
-     */
-    private fun triggerFallbackAutoResume() {
-        Log.i(TAG, "========================================")
-        Log.i(TAG, "Fallback auto-resume triggered")
-        Log.i(TAG, "========================================")
-
-        // Cancel any existing timeout from previous attempts
-        autoResumeTimeoutRunnable?.let { handler.removeCallbacks(it) }
-        autoResumeTimeoutRunnable = null
-
-        // Mark that we're attempting auto-resume
-        waitingForStreamStart = true
-
-        runOnUiThread {
-            Toast.makeText(this, "Waiting for connection...", Toast.LENGTH_SHORT).show()
-
-            // Wait for SendSpin to be connected before resuming
-            waitForSendspinAndResume(0)
-        }
-    }
-
-    /**
-     * Polls for SendSpin connection and resumes when ready.
-     * @param attempts Number of attempts so far
-     */
-    private fun waitForSendspinAndResume(attempts: Int) {
-        val maxAttempts = 15  // Try for 15 seconds (1s intervals)
-
-        if (!waitingForStreamStart) {
-            Log.d(TAG, "waitForSendspinAndResume: waitingForStreamStart is false, aborting")
-            return
-        }
-
-        // Abort if primary path (onSendspinStabilized) has taken over
-        if (primaryAutoResumeActive) {
-            Log.d(TAG, "waitForSendspinAndResume: primary path active, stopping fallback")
-            return
-        }
-
-        webView.evaluateJavascript("""
-            (function() {
-                const ssConnected = window.isSendspinConnected ? window.isSendspinConnected() : false;
-                const ssStabilized = window.isSendspinStabilized ? window.isSendspinStabilized() : false;
-                const maConnected = window.MaWebSocket && window.MaWebSocket.isConnected();
-                return JSON.stringify({ssConnected: ssConnected, ssStabilized: ssStabilized, maConnected: maConnected});
-            })();
-        """.trimIndent()) { result ->
-            Log.i(TAG, "Fallback check #$attempts - connection status: $result")
-
-            // Parse JSON result
-            val ssConnected = result.contains("\"ssConnected\":true")
-            val maConnected = result.contains("\"maConnected\":true")
-
-            when {
-                ssConnected && maConnected -> {
-                    // SendSpin is ready, wait 3 more seconds for stability then resume
-                    Log.i(TAG, "SendSpin connected! Waiting 3s for stability...")
-                    Toast.makeText(this, "Connection ready, resuming...", Toast.LENGTH_SHORT).show()
-                    handler.postDelayed({
-                        if (waitingForStreamStart) {
-                            Log.i(TAG, "Stability delay complete, proceeding with auto-resume")
-                            autoResumeRetryCount = 0  // Reset retry counter before first attempt
-                            performAutoResumeStopPlay()
-                        }
-                    }, 3000)  // 3 second safety delay
-                }
-                attempts >= maxAttempts -> {
-                    // Timeout - try anyway if MaWebSocket is connected
-                    if (maConnected) {
-                        Log.w(TAG, "SendSpin not connected after ${maxAttempts}s, trying resume anyway...")
-                        Toast.makeText(this, "Auto-resuming...", Toast.LENGTH_SHORT).show()
-                        performAutoResumeStopPlay()
-                    } else {
-                        Log.w(TAG, "Fallback auto-resume timed out - no connection")
-                        waitingForStreamStart = false
-                        wasPlayingBeforeNetworkLoss = false
-                        Toast.makeText(this, "Could not auto-resume - no connection", Toast.LENGTH_SHORT).show()
-                    }
-                }
-                else -> {
-                    // Not ready yet, try again in 1 second
-                    handler.postDelayed({
-                        waitForSendspinAndResume(attempts + 1)
-                    }, 1000)
+    private fun setupAutoResumeCoordinator() {
+        networkAutoResume = NetworkAutoResumeCoordinator(handler, object : NetworkAutoResumeCoordinator.Host {
+            override fun evaluateJavascript(script: String, callback: (String) -> Unit) {
+                runOnUiThread {
+                    webView.evaluateJavascript(script, callback)
                 }
             }
-        }
-    }
 
-    /**
-     * Performs the actual stop/play sequence for auto-resume.
-     */
-    private fun performAutoResumeStopPlay() {
-        Log.i(TAG, "Fallback: Sending stop command...")
-        webView.evaluateJavascript("""
-            (function() {
-                if (window.MaWebSocket && window.MaWebSocket.isConnected()) {
-                    console.log('[FallbackResume] Sending stop command');
-                    window.MaWebSocket.stop();
-                    return 'stop_sent';
+            override fun showToast(message: String, duration: Int) {
+                runOnUiThread {
+                    Toast.makeText(this@MainActivity, message, duration).show()
                 }
-                return 'not_connected';
-            })();
-        """.trimIndent()) { stopResult ->
-            Log.i(TAG, "Fallback stop result: $stopResult")
+            }
 
-            handler.postDelayed({
-                Log.i(TAG, "Fallback: Sending play command...")
-                webView.evaluateJavascript("""
-                    (function() {
-                        if (window.MaWebSocket && window.MaWebSocket.isConnected()) {
-                            console.log('[FallbackResume] Sending play command');
-                            window.MaWebSocket.play();
-                            return 'play_sent';
-                        }
-                        return 'not_connected';
-                    })();
-                """.trimIndent()) { playResult ->
-                    Log.i(TAG, "Fallback play result: $playResult")
+            override fun reloadWebViewForAutoResumeRetry(retryCount: Int, maxRetries: Int) {
+                runOnUiThread {
+                    Toast.makeText(
+                        this@MainActivity,
+                        "Reloading... ($retryCount/$maxRetries)",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                    pendingAutoPlayAfterReload = true
+                    webView.reload()
+                }
+            }
 
-                    // Seek to saved position after play starts (only if same track)
-                    val savedPosSec = savedPositionMs / 1000
-                    if (savedPosSec > 5 && savedTrackTitle.isNotEmpty()) {
-                        handler.postDelayed({
-                            // Verify track hasn't changed before seeking
-                            if (currentTrackTitle == savedTrackTitle) {
-                                Log.i(TAG, "Fallback: Same track confirmed, seeking to saved position: ${savedPosSec}s")
-                                webView.evaluateJavascript("""
-                                    (function() {
-                                        if (window.MaWebSocket && window.MaWebSocket.isConnected()) {
-                                            console.log('[FallbackResume] Seeking to $savedPosSec seconds');
-                                            window.MaWebSocket.seek($savedPosSec);
-                                            return 'seek_sent';
-                                        }
-                                        return 'not_connected';
-                                    })();
-                                """.trimIndent()) { seekResult ->
-                                    Log.i(TAG, "Fallback seek result: $seekResult")
-                                }
-                            } else {
-                                Log.i(TAG, "Fallback: Track changed (was: $savedTrackTitle, now: $currentTrackTitle) - skipping seek")
+            override fun forceCloseSocketsForReconnect() {
+                runOnUiThread {
+                    Log.i(TAG, "Forcing controlled WebSocket reset after resume timeout...")
+                    webView.evaluateJavascript(
+                        """
+                        (function() {
+                            console.log('[AutoResume] Controlled socket reset after timeout');
+                            if (window.closeSendspinSocket) {
+                                window.closeSendspinSocket();
                             }
-                        }, 1000)  // Wait 1s for play to start before seeking
+                            if (window.MaWebSocket && window.MaWebSocket.close) {
+                                window.MaWebSocket.close();
+                            }
+                            return 'closed';
+                        })();
+                        """.trimIndent()
+                    ) { result ->
+                        Log.i(TAG, "WebSocket close result: $result")
                     }
-                }
-            }, 500)  // Wait 500ms after stop before play
-        }
-
-        // Set timeout for stream/start detection - reload WebView on each retry
-        autoResumeTimeoutRunnable = Runnable {
-            if (waitingForStreamStart) {
-                autoResumeRetryCount++
-                Log.w(TAG, "Fallback auto-resume timed out - no stream/start (attempt $autoResumeRetryCount/$MAX_AUTO_RESUME_RETRIES)")
-
-                if (autoResumeRetryCount < MAX_AUTO_RESUME_RETRIES) {
-                    // Retry by reloading WebView
-                    Log.i(TAG, "Reloading WebView for retry...")
-                    runOnUiThread {
-                        Toast.makeText(this, "Reloading... ($autoResumeRetryCount/$MAX_AUTO_RESUME_RETRIES)", Toast.LENGTH_SHORT).show()
-                        pendingAutoPlayAfterReload = true
-                        webView.reload()
-                    }
-                    // Keep waitingForStreamStart active for next attempt
-                    // primaryAutoResumeActive will be reset after reload triggers new stabilization
-                    primaryAutoResumeActive = false
-                } else {
-                    // All retries failed
-                    Log.w(TAG, "All $MAX_AUTO_RESUME_RETRIES retries failed - giving up")
-                    runOnUiThread {
-                        Toast.makeText(this, "Could not resume playback", Toast.LENGTH_LONG).show()
-                    }
-                    waitingForStreamStart = false
-                    wasPlayingBeforeNetworkLoss = false
-                    autoResumeRetryCount = 0
-                    primaryAutoResumeActive = false
                 }
             }
-        }
-        handler.postDelayed(autoResumeTimeoutRunnable!!, 5000)
+
+            override fun getCurrentTrackTitle(): String = currentTrackTitle
+
+            override fun getPhonePlayerId(): String? = phonePlayerId
+
+            override fun isCurrentlyPlaying(): Boolean = this@MainActivity.isCurrentlyPlaying
+
+            override fun getCurrentPositionMs(): Long = currentPositionMs
+        })
     }
 
     /**
@@ -632,24 +463,34 @@ class MainActivity : AppCompatActivity(),
         if (bluetoothReceiver != null) return
 
         bluetoothReceiver = BluetoothAutoPlayReceiver(
-            onBluetoothAudioConnected = { deviceName ->
-                Log.i(TAG, "Bluetooth device connected: $deviceName")
+            onBluetoothAudioConnected = { device ->
+                val flowId = nextBtFlowId("CONNECT")
+                Log.i(TAG, "[BT_FLOW][$flowId] connected name=${device.name} addr=${device.address}")
+
+                // Cancel pending disconnect stop on any new BT connect event (handoff protection)
+                pendingBtDisconnectStopRunnable?.let {
+                    handler.removeCallbacks(it)
+                    pendingBtDisconnectStopRunnable = null
+                    Log.i(TAG, "[BT_FLOW][$flowId] canceled pending disconnect stop (handoff/reconnect)")
+                }
+                pendingBtDisconnectDeviceAddress = null
 
                 // Check if auto-play is enabled
                 if (!preferencesHelper.autoPlayOnBluetooth) {
-                    Log.d(TAG, "Auto-play on Bluetooth is disabled")
+                    Log.d(TAG, "[BT_FLOW][$flowId] auto-play disabled")
                     return@BluetoothAutoPlayReceiver
                 }
 
                 // Check if WebView is ready
                 if (!webViewReady) {
-                    Log.d(TAG, "WebView not ready yet, skipping auto-play")
+                    Log.d(TAG, "[BT_FLOW][$flowId] WebView not ready, skipping")
                     return@BluetoothAutoPlayReceiver
                 }
 
                 // Ignore if we're already processing a BT auto-play
                 if (pendingBluetoothAutoPlayDevice != null) {
-                    Log.d(TAG, "Already processing BT auto-play, ignoring duplicate event")
+                    val pending = pendingBluetoothAutoPlayDevice
+                    Log.d(TAG, "[BT_FLOW][$flowId] auto-play already in progress for ${pending?.name} (${pending?.address}), ignoring duplicate")
                     return@BluetoothAutoPlayReceiver
                 }
 
@@ -657,89 +498,83 @@ class MainActivity : AppCompatActivity(),
                 webView.onResume()
                 webView.resumeTimers()
 
-                // Check if PHONE is actively streaming audio (not just any player playing)
-                // We need to check if phone player is selected AND playing
+                // Check if PHONE is actively streaming audio (not just selected in UI)
                 checkIfPhoneIsActivePlayer { isPhoneSelected ->
-                    if (isPhoneSelected && isCurrentlyPlaying) {
-                        // Phone is playing - don't reload, just let audio route to BT
-                        Log.i(TAG, "BT connected while PHONE is playing - audio will route to BT automatically")
-                        Toast.makeText(this, "Connected: $deviceName", Toast.LENGTH_SHORT).show()
-                        return@checkIfPhoneIsActivePlayer
-                    }
+                    if (isPhoneSelected) {
+                        checkIfPhoneActuallyPlaying { phoneActuallyPlaying ->
+                            if (phoneActuallyPlaying) {
+                                // Phone is truly playing - don't interrupt with stop/play
+                                Log.i(TAG, "[BT_FLOW][$flowId] phone confirmed playing, route should switch automatically")
+                                Toast.makeText(this, "Connected: ${device.name}", Toast.LENGTH_SHORT).show()
+                                return@checkIfPhoneActuallyPlaying
+                            }
 
-                    // Phone is not playing - select phone speaker and start playback
-                    // Skip reload only if app is in foreground AND WebSocket is alive
-                    val isInForeground = lifecycle.currentState.isAtLeast(androidx.lifecycle.Lifecycle.State.RESUMED)
-
-                    if (!isInForeground) {
-                        // App in background - WebSocket likely stale, reload
-                        Log.i(TAG, "BT connected - app in background, reloading for auto-play")
-                        pendingBluetoothAutoPlayDevice = deviceName
-                        Toast.makeText(this, "Connecting $deviceName...", Toast.LENGTH_SHORT).show()
-                        webView.reload()
-                        return@checkIfPhoneIsActivePlayer
-                    }
-
-                    webView.evaluateJavascript(
-                        "(window.MaWebSocket && window.MaWebSocket.isConnected()) ? 'connected' : 'disconnected'"
-                    ) { result ->
-                        if (result.contains("connected")) {
-                            // Foreground + WebSocket alive - select phone and play directly
-                            Log.i(TAG, "BT connected - foreground + WebSocket alive, selecting phone + play (no reload)")
-                            pendingBluetoothAutoPlayDevice = deviceName
-                            selectPhoneAndPlay(deviceName)
-                        } else {
-                            // WebSocket stale - need full reload
-                            Log.i(TAG, "BT connected - WebSocket stale, reloading for auto-play")
-                            pendingBluetoothAutoPlayDevice = deviceName
-                            Toast.makeText(this, "Connecting $deviceName...", Toast.LENGTH_SHORT).show()
-                            webView.reload()
+                            Log.i(TAG, "[BT_FLOW][$flowId] phone selected but not actually playing, proceeding with auto-play")
+                            continueBluetoothAutoPlay(flowId, device)
                         }
+                        return@checkIfPhoneIsActivePlayer
                     }
+
+                    continueBluetoothAutoPlay(flowId, device)
                 }
             },
-            onBluetoothAudioDisconnected = { deviceName ->
-                Log.i(TAG, "Bluetooth device disconnected: $deviceName")
+            onBluetoothAudioDisconnected = { device ->
+                val flowId = nextBtFlowId("DISCONNECT")
+                Log.i(TAG, "[BT_FLOW][$flowId] disconnected name=${device.name} addr=${device.address}")
 
                 // Prevent network auto-resume from triggering after BT disconnect
                 // (BT disconnect can cause SendSpin reconnect → false auto-resume)
-                wasPlayingBeforeNetworkLoss = false
+                networkAutoResume.onBluetoothDisconnect()
 
                 // Only stop if currently playing
                 if (!isCurrentlyPlaying) {
-                    Log.d(TAG, "Not playing, no need to stop on BT disconnect")
+                    Log.d(TAG, "[BT_FLOW][$flowId] not playing, no stop needed")
                     return@BluetoothAutoPlayReceiver
                 }
 
                 // Check if WebView is ready
                 if (!webViewReady) {
-                    Log.d(TAG, "WebView not ready, can't stop playback")
+                    Log.d(TAG, "[BT_FLOW][$flowId] WebView not ready, cannot stop")
                     return@BluetoothAutoPlayReceiver
                 }
 
-                // Only stop if phone speaker is selected (don't stop external speakers like Sonos)
-                checkIfPhoneIsActivePlayer { isPhoneSelected ->
-                    if (isPhoneSelected) {
-                        Log.i(TAG, "Phone selected, stopping playback due to Bluetooth disconnect")
-                        runOnUiThread {
-                            Toast.makeText(this, "Bluetooth disconnected - stopping playback", Toast.LENGTH_SHORT).show()
-                            webView.evaluateJavascript("""
-                                (function() {
-                                    if (window.MaWebSocket && window.MaWebSocket.isConnected()) {
-                                        console.log('[BluetoothDisconnect] Sending stop command');
-                                        window.MaWebSocket.stop();
-                                        return 'stopped';
-                                    }
-                                    return 'not_connected';
-                                })();
-                            """.trimIndent()) { result ->
-                                Log.i(TAG, "BT disconnect stop result: $result")
+                // Grace period to avoid false stop during BT handoff/reconnect races
+                pendingBtDisconnectStopRunnable?.let { handler.removeCallbacks(it) }
+                pendingBtDisconnectDeviceAddress = device.address
+                pendingBtDisconnectStopRunnable = Runnable {
+                    if (pendingBtDisconnectDeviceAddress != device.address) {
+                        Log.d(TAG, "[BT_FLOW][$flowId] disconnect runnable stale, skipping")
+                        return@Runnable
+                    }
+
+                    // Only stop if phone speaker is selected (don't stop external speakers like Sonos)
+                    checkIfPhoneIsActivePlayer { isPhoneSelected ->
+                        if (isPhoneSelected) {
+                            Log.i(TAG, "[BT_FLOW][$flowId] grace elapsed, stopping playback due to disconnect")
+                            runOnUiThread {
+                                Toast.makeText(this, "Bluetooth disconnected - stopping playback", Toast.LENGTH_SHORT).show()
+                                webView.evaluateJavascript("""
+                                    (function() {
+                                        if (window.MaWebSocket && window.MaWebSocket.isConnected()) {
+                                            console.log('[BluetoothDisconnect] Sending stop command');
+                                            window.MaWebSocket.stop();
+                                            return 'stopped';
+                                        }
+                                        return 'not_connected';
+                                    })();
+                                """.trimIndent()) { result ->
+                                    Log.i(TAG, "[BT_FLOW][$flowId] disconnect stop result=$result")
+                                }
                             }
+                        } else {
+                            Log.i(TAG, "[BT_FLOW][$flowId] phone not selected, ignoring disconnect")
                         }
-                    } else {
-                        Log.i(TAG, "Phone not selected - ignoring BT disconnect (external speaker in use)")
+                        pendingBtDisconnectDeviceAddress = null
+                        pendingBtDisconnectStopRunnable = null
                     }
                 }
+                handler.postDelayed(pendingBtDisconnectStopRunnable!!, BT_DISCONNECT_GRACE_MS)
+                Log.i(TAG, "[BT_FLOW][$flowId] scheduled disconnect grace=${BT_DISCONNECT_GRACE_MS}ms")
             }
         )
 
@@ -748,11 +583,45 @@ class MainActivity : AppCompatActivity(),
                 this,
                 bluetoothReceiver,
                 BluetoothAutoPlayReceiver.getIntentFilter(),
-                ContextCompat.RECEIVER_NOT_EXPORTED
+                ContextCompat.RECEIVER_EXPORTED
             )
             Log.i(TAG, "Bluetooth auto-play receiver registered")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to register Bluetooth receiver", e)
+        }
+    }
+
+    private fun continueBluetoothAutoPlay(
+        flowId: String,
+        device: BluetoothAutoPlayReceiver.BluetoothAudioDevice
+    ) {
+        // Skip reload only if app is in foreground AND WebSocket is alive
+        val isInForeground = lifecycle.currentState.isAtLeast(androidx.lifecycle.Lifecycle.State.RESUMED)
+
+        if (!isInForeground) {
+            // App in background - WebSocket likely stale, reload
+            Log.i(TAG, "[BT_FLOW][$flowId] app in background, reloading for auto-play")
+            pendingBluetoothAutoPlayDevice = device
+            Toast.makeText(this, "Connecting ${device.name}...", Toast.LENGTH_SHORT).show()
+            webView.reload()
+            return
+        }
+
+        webView.evaluateJavascript(
+            "(window.MaWebSocket && window.MaWebSocket.isConnected()) ? 'connected' : 'disconnected'"
+        ) { result ->
+            if (result.contains("connected")) {
+                // Foreground + WebSocket alive - select phone and play directly
+                Log.i(TAG, "[BT_FLOW][$flowId] foreground + WebSocket alive, selecting phone + play")
+                pendingBluetoothAutoPlayDevice = device
+                selectPhoneAndPlay(device, flowId)
+            } else {
+                // WebSocket stale - need full reload
+                Log.i(TAG, "[BT_FLOW][$flowId] WebSocket stale, reloading for auto-play")
+                pendingBluetoothAutoPlayDevice = device
+                Toast.makeText(this, "Connecting ${device.name}...", Toast.LENGTH_SHORT).show()
+                webView.reload()
+            }
         }
     }
 
@@ -1478,7 +1347,10 @@ class MainActivity : AppCompatActivity(),
         }
     }
 
-    private fun waitForBluetoothAudioAndPlay(deviceName: String) {
+    private fun waitForBluetoothAudioAndPlay(
+        device: BluetoothAutoPlayReceiver.BluetoothAudioDevice,
+        flowId: String
+    ) {
         val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
         var attempts = 0
         val maxAttempts = 20  // 10 seconds max (500ms intervals)
@@ -1488,17 +1360,17 @@ class MainActivity : AppCompatActivity(),
             val isBluetoothA2dpOn = audioManager.isBluetoothA2dpOn
             val isBluetoothScoOn = audioManager.isBluetoothScoOn
 
-            Log.d(TAG, "Bluetooth audio check #$attempts: A2DP=$isBluetoothA2dpOn, SCO=$isBluetoothScoOn")
+            Log.d(TAG, "[BT_FLOW][$flowId] audio check #$attempts A2DP=$isBluetoothA2dpOn SCO=$isBluetoothScoOn")
 
             if (isBluetoothA2dpOn || isBluetoothScoOn) {
-                Log.i(TAG, "Bluetooth audio ready, selecting phone speaker and starting playback...")
+                Log.i(TAG, "[BT_FLOW][$flowId] audio route ready, selecting phone + play")
                 // Select phone speaker and play
-                selectPhoneAndPlay(deviceName)
+                selectPhoneAndPlay(device, flowId)
             } else if (attempts < maxAttempts) {
                 handler.postDelayed({ checkAndPlay() }, 500)
             } else {
-                Log.w(TAG, "Bluetooth audio not ready after ${maxAttempts * 500}ms, trying anyway...")
-                selectPhoneAndPlay(deviceName)
+                Log.w(TAG, "[BT_FLOW][$flowId] audio route not ready after ${maxAttempts * 500}ms, trying anyway")
+                selectPhoneAndPlay(device, flowId)
             }
         }
 
@@ -1510,8 +1382,11 @@ class MainActivity : AppCompatActivity(),
      * Select the phone speaker (SendSpin) and start playback using stop+play sequence.
      * Uses the same approach as network reconnect auto-resume for reliability.
      */
-    private fun selectPhoneAndPlay(deviceName: String) {
-        Log.i(TAG, "BT auto-play: Selecting phone speaker and starting playback...")
+    private fun selectPhoneAndPlay(
+        device: BluetoothAutoPlayReceiver.BluetoothAudioDevice,
+        flowId: String = nextBtFlowId("AUTOPLAY")
+    ) {
+        Log.i(TAG, "[BT_FLOW][$flowId] selecting phone speaker and starting playback for ${device.name} (${device.address})")
 
         // Step 1: Select phone speaker
         val selectScript = """
@@ -1524,9 +1399,15 @@ class MainActivity : AppCompatActivity(),
 
                 if (window.MaWebSocket && window.MaWebSocket.setSelectedPlayer) {
                     console.log('[BT-AutoPlay] Selecting phone speaker:', sendspinId);
-                    window.MaWebSocket.setSelectedPlayer(sendspinId, 'Phone');
-                    localStorage.setItem('massdroid_selected_player_id', sendspinId);
-                    return JSON.stringify({ success: true, player: sendspinId });
+                    let clickedCard = false;
+                    if (window.MaWebSocket.setSelectedPlayerAndSyncUI) {
+                        clickedCard = window.MaWebSocket.setSelectedPlayerAndSyncUI(sendspinId, 'Phone');
+                    } else {
+                        window.MaWebSocket.setSelectedPlayer(sendspinId, 'Phone');
+                        localStorage.setItem('massdroid_selected_player_id', sendspinId);
+                    }
+
+                    return JSON.stringify({ success: true, player: sendspinId, clickedCard: clickedCard });
                 }
 
                 return JSON.stringify({ success: false, error: 'no_websocket' });
@@ -1534,17 +1415,17 @@ class MainActivity : AppCompatActivity(),
         """.trimIndent()
 
         webView.evaluateJavascript(selectScript) { selectResult ->
-            Log.i(TAG, "BT auto-play select result: $selectResult")
+            Log.i(TAG, "[BT_FLOW][$flowId] select result=$selectResult")
 
             if (!selectResult.contains("\\\"success\\\":true")) {
-                Log.w(TAG, "Failed to select phone speaker")
+                Log.w(TAG, "[BT_FLOW][$flowId] failed to select phone speaker")
                 pendingBluetoothAutoPlayDevice = null
                 return@evaluateJavascript
             }
 
             // Step 2: Stop current playback (like network reconnect does)
             handler.postDelayed({
-                Log.i(TAG, "BT auto-play: Sending stop command...")
+                Log.i(TAG, "[BT_FLOW][$flowId] sending stop command")
                 webView.evaluateJavascript("""
                     (function() {
                         if (window.MaWebSocket && window.MaWebSocket.isConnected()) {
@@ -1555,11 +1436,11 @@ class MainActivity : AppCompatActivity(),
                         return 'not_connected';
                     })();
                 """.trimIndent()) { stopResult ->
-                    Log.i(TAG, "BT auto-play stop result: $stopResult")
+                    Log.i(TAG, "[BT_FLOW][$flowId] stop result=$stopResult")
 
                     // Step 3: Play (without player ID - uses selected player)
                     handler.postDelayed({
-                        Log.i(TAG, "BT auto-play: Sending play command...")
+                        Log.i(TAG, "[BT_FLOW][$flowId] sending play command")
                         webView.evaluateJavascript("""
                             (function() {
                                 if (window.MaWebSocket && window.MaWebSocket.isConnected()) {
@@ -1570,11 +1451,11 @@ class MainActivity : AppCompatActivity(),
                                 return 'not_connected';
                             })();
                         """.trimIndent()) { playResult ->
-                            Log.i(TAG, "BT auto-play play result: $playResult")
+                            Log.i(TAG, "[BT_FLOW][$flowId] play result=$playResult")
                             pendingBluetoothAutoPlayDevice = null
 
                             if (playResult.contains("play_sent")) {
-                                Toast.makeText(this, "Auto-playing: $deviceName", Toast.LENGTH_SHORT).show()
+                                Toast.makeText(this, "Auto-playing: ${device.name}", Toast.LENGTH_SHORT).show()
                             }
                         }
                     }, 500)  // Wait 500ms after stop before play
@@ -1724,9 +1605,13 @@ class MainActivity : AppCompatActivity(),
 
                         console.log('[AutoResume-Reload] All checks passed! Triggering play...');
 
-                        // Set phone as selected player
-                        window.MaWebSocket.setSelectedPlayer(phonePlayerId, 'Phone');
-                        localStorage.setItem('massdroid_selected_player_id', phonePlayerId);
+                        // Set phone as selected player (sync internal + UI state)
+                        if (window.MaWebSocket.setSelectedPlayerAndSyncUI) {
+                            window.MaWebSocket.setSelectedPlayerAndSyncUI(phonePlayerId, 'Phone');
+                        } else {
+                            window.MaWebSocket.setSelectedPlayer(phonePlayerId, 'Phone');
+                            localStorage.setItem('massdroid_selected_player_id', phonePlayerId);
+                        }
 
                         // CRITICAL FIX: Use MaWebSocket.play() instead of musicPlayer.play()
                         // After page reload, the MediaSession handlers exist but don't properly
@@ -1828,6 +1713,9 @@ class MainActivity : AppCompatActivity(),
                     it.audioAttributes.usage == AudioAttributes.USAGE_VOICE_COMMUNICATION ||
                     it.audioAttributes.usage == AudioAttributes.USAGE_VOICE_COMMUNICATION_SIGNALLING
                 } ?: false
+                val autoResumeSensitiveWindow =
+                    ::networkAutoResume.isInitialized &&
+                        (networkAutoResume.waitingForStreamStart || networkAutoResume.isRecoveryWindowActive())
 
                 // Only log when something meaningful changes
                 if (mediaCount != lastLoggedMediaCount || hasVoiceCall != lastLoggedVoiceCall) {
@@ -1888,6 +1776,14 @@ class MainActivity : AppCompatActivity(),
                 // Media app detection: yield when another media app starts
                 val pastGrace = SystemClock.elapsedRealtime() - playStartTime > 3000
                 if (isCurrentlyPlaying && pastGrace && mediaCount > lastKnownMediaConfigCount) {
+                    if (autoResumeSensitiveWindow) {
+                        Log.d(
+                            TAG,
+                            "Suppressing external-yield during auto-resume window (mediaCount=$mediaCount baseline=$lastKnownMediaConfigCount)"
+                        )
+                        lastKnownMediaConfigCount = mediaCount
+                        return
+                    }
                     Log.i(TAG, "Other media app detected ($lastKnownMediaConfigCount -> $mediaCount configs) - yielding")
                     yieldedToOtherApp = true
                     runOnUiThread {
@@ -1920,6 +1816,7 @@ class MainActivity : AppCompatActivity(),
         try {
             if (androidx.webkit.WebViewFeature.isFeatureSupported(androidx.webkit.WebViewFeature.MUTE_AUDIO)) {
                 androidx.webkit.WebViewCompat.setAudioMuted(webView, muted)
+                webViewAudioMuted = muted
                 Log.d(TAG, "WebView audio ${if (muted) "muted" else "unmuted"}")
             } else {
                 Log.w(TAG, "WebView audio muting not supported")
@@ -1964,20 +1861,13 @@ class MainActivity : AppCompatActivity(),
                         var name = phone.display_name || 'This Device';
                         console.log('[AutoSelect] Switching to: ' + name);
 
-                        // 1. Update our internal tracking (triggers toast via onPlayerSelected)
-                        window.MaWebSocket.setSelectedPlayer(playerId, name);
-                        localStorage.setItem('massdroid_selected_player_id', playerId);
-                        localStorage.setItem('massdroid_selected_player_name', name);
-
-                        // 2. Click the card in the MA UI to update Vue state
-                        var card = document.getElementById(playerId);
-                        if (card) {
-                            console.log('[AutoSelect] Clicking card to update MA frontend');
-                            card.dispatchEvent(new PointerEvent('pointerdown', {bubbles: true, cancelable: true}));
-                            setTimeout(function() {
-                                card.dispatchEvent(new PointerEvent('pointerup', {bubbles: true, cancelable: true}));
-                                card.dispatchEvent(new MouseEvent('click', {bubbles: true, cancelable: true, view: window}));
-                            }, 50);
+                        // Update internal tracking + persist + sync MA frontend selection UI
+                        if (window.MaWebSocket.setSelectedPlayerAndSyncUI) {
+                            window.MaWebSocket.setSelectedPlayerAndSyncUI(playerId, name);
+                        } else {
+                            window.MaWebSocket.setSelectedPlayer(playerId, name);
+                            localStorage.setItem('massdroid_selected_player_id', playerId);
+                            localStorage.setItem('massdroid_selected_player_name', name);
                         }
                     });
 
@@ -2167,6 +2057,29 @@ class MainActivity : AppCompatActivity(),
     }
 
     /**
+     * Checks if the phone player is actually in "playing" state based on MaWebSocket runtime state.
+     * This avoids false positives from stale Kotlin-side isCurrentlyPlaying state.
+     */
+    private fun checkIfPhoneActuallyPlaying(callback: (Boolean) -> Unit) {
+        val checkScript = """
+            (function() {
+                const sendspinId = localStorage.getItem('sendspin_webplayer_id');
+                if (!sendspinId || !window.MaWebSocket) return false;
+                const currentPlaying = window.MaWebSocket._currentlyPlayingId;
+                return currentPlaying && currentPlaying === sendspinId;
+            })();
+        """.trimIndent()
+
+        runOnUiThread {
+            webView.evaluateJavascript(checkScript) { result ->
+                val isActuallyPlaying = result == "true"
+                Log.d(TAG, "checkIfPhoneActuallyPlaying: $isActuallyPlaying")
+                callback(isActuallyPlaying)
+            }
+        }
+    }
+
+    /**
      * Check if WebSocket connection is lost and reload if needed.
      * Called on resume to handle stale WebView after long background.
      */
@@ -2297,6 +2210,9 @@ class MainActivity : AppCompatActivity(),
 
             activity.runOnUiThread {
                 val isPlaying = state == "playing"
+                activity.networkAutoResume.onPlaybackStateUpdate(isPlaying)
+                val autoResumeSensitiveWindow =
+                    (activity.networkAutoResume.waitingForStreamStart || activity.networkAutoResume.isRecoveryWindowActive())
 
                 // External player selected: don't update MediaSession, don't mute.
                 // The phone speaker may still be playing in the background while
@@ -2309,8 +2225,13 @@ class MainActivity : AppCompatActivity(),
                 // If we yielded to another app, ignore server "playing" updates
                 // until the server confirms our pause (prevents unmuting loop)
                 if (isPlaying && activity.yieldedToOtherApp) {
-                    Log.d(TAG, "Ignoring server 'playing' - yielded to other app")
-                    return@runOnUiThread
+                    if (autoResumeSensitiveWindow) {
+                        Log.i(TAG, "Clearing yieldedToOtherApp during auto-resume playback confirmation")
+                        activity.yieldedToOtherApp = false
+                    } else {
+                        Log.d(TAG, "Ignoring server 'playing' - yielded to other app")
+                        return@runOnUiThread
+                    }
                 }
                 if (!isPlaying) {
                     activity.yieldedToOtherApp = false  // Server confirmed pause
@@ -2319,6 +2240,14 @@ class MainActivity : AppCompatActivity(),
                 // Phone speaker: track state and update MediaSession
                 val wasPlaying = activity.isCurrentlyPlaying
                 activity.isCurrentlyPlaying = isPlaying
+
+                if (isPlaying) {
+                    val resumedFlowId = activity.networkAutoResume.onPlaybackConfirmedPlaying(positionMs)
+                    if (resumedFlowId != null) {
+                        Log.i(TAG, "[NET_RETRY][$resumedFlowId] playback state confirmed playing, auto-resume successful")
+                    }
+                }
+
                 // Track transitions for grace period and phone call detection
                 if (isPlaying && !wasPlaying) {
                     activity.playStartTime = SystemClock.elapsedRealtime()
@@ -2329,7 +2258,7 @@ class MainActivity : AppCompatActivity(),
 
                 // Unmute on play transition (needed when user starts from MA web UI).
                 // Do NOT mute on pause — server stops streaming naturally, avoids audio clicks.
-                if (isPlaying && !wasPlaying) {
+                if (isPlaying && (!wasPlaying || activity.webViewAudioMuted)) {
                     activity.setWebViewAudioMuted(false)
                 }
 
@@ -2457,7 +2386,7 @@ class MainActivity : AppCompatActivity(),
             Log.i(TAG, "SendSpin STABILIZED")
             Log.i(TAG, "  isConnected: $isConnected")
             Log.i(TAG, "  serverPlaybackState: $serverPlaybackState")
-            Log.i(TAG, "  wasPlayingBeforeNetworkLoss: ${activity.wasPlayingBeforeNetworkLoss}")
+            Log.i(TAG, "  wasPlayingBeforeNetworkLoss: ${activity.networkAutoResume.wasPlayingBeforeNetworkLoss}")
             Log.i(TAG, "  autoResumeEnabled: ${activity.preferencesHelper.autoResumeOnNetwork}")
             Log.i(TAG, "========================================")
 
@@ -2471,23 +2400,30 @@ class MainActivity : AppCompatActivity(),
             // Handle pending Bluetooth auto-play (triggered by BT connect + reload)
             val btDevice = activity.pendingBluetoothAutoPlayDevice
             if (btDevice != null) {
-                Log.i(TAG, "Triggering BT auto-play for: $btDevice")
+                val btFlowId = activity.nextBtFlowId("RESUME")
+                Log.i(TAG, "[BT_FLOW][$btFlowId] triggering pending BT auto-play for ${btDevice.name} (${btDevice.address})")
                 // DON'T clear pendingBluetoothAutoPlayDevice here - let selectPhoneAndPlay clear it
                 // This protects against duplicate BT profile events during selectPhoneAndPlay
                 activity.runOnUiThread {
-                    activity.selectPhoneAndPlay(btDevice)
+                    activity.selectPhoneAndPlay(btDevice, btFlowId)
                 }
                 return
             }
 
-            if (!activity.wasPlayingBeforeNetworkLoss) {
+            if (!activity.networkAutoResume.wasPlayingBeforeNetworkLoss) {
                 Log.i(TAG, "Was not playing before network loss - no auto-resume needed")
+                return
+            }
+
+            if (!activity.networkAutoResume.isRecoveryWindowActive()) {
+                Log.i(TAG, "Auto-resume recovery window expired - skipping")
+                activity.networkAutoResume.clearRecoveryState()
                 return
             }
 
             if (!activity.preferencesHelper.autoResumeOnNetwork) {
                 Log.i(TAG, "Auto-resume disabled in settings - skipping")
-                activity.wasPlayingBeforeNetworkLoss = false
+                activity.networkAutoResume.clearRecoveryState()
                 return
             }
 
@@ -2495,110 +2431,11 @@ class MainActivity : AppCompatActivity(),
             activity.checkIfPhoneIsActivePlayer { isPhoneSelected ->
                 if (!isPhoneSelected) {
                     Log.i(TAG, "Phone not selected - skipping auto-resume (external speaker in use)")
-                    activity.wasPlayingBeforeNetworkLoss = false
+                    activity.networkAutoResume.clearRecoveryState()
                     return@checkIfPhoneIsActivePlayer
                 }
 
-                Log.i(TAG, "Triggering auto-resume (primary path)...")
-                activity.waitingForStreamStart = true
-                activity.autoResumeRetryCount = 0  // Reset retry counter
-                activity.primaryAutoResumeActive = true  // Stop fallback polling
-
-                activity.runOnUiThread {
-                    // Show toast to indicate auto-resume is starting
-                    Toast.makeText(activity, "Auto-resuming...", Toast.LENGTH_SHORT).show()
-                // The server thinks it's already playing, but no stream/start was sent
-                // Force a fresh stream by stopping then playing
-                activity.handler.postDelayed({
-                    Log.i(TAG, "Sending stop command to force stream reset...")
-                    activity.webView.evaluateJavascript("""
-                        (function() {
-                            if (window.MaWebSocket && window.MaWebSocket.isConnected()) {
-                                console.log('[AutoResume] Sending stop command');
-                                window.MaWebSocket.stop();
-                                return 'stop_sent';
-                            }
-                            return 'not_connected';
-                        })();
-                    """.trimIndent()) { stopResult ->
-                        Log.i(TAG, "Stop command result: $stopResult")
-
-                        // Wait a moment for stop to process, then play
-                        activity.handler.postDelayed({
-                            Log.i(TAG, "Sending play command...")
-                            activity.webView.evaluateJavascript("""
-                                (function() {
-                                    if (window.MaWebSocket && window.MaWebSocket.isConnected()) {
-                                        console.log('[AutoResume] Sending play command');
-                                        window.MaWebSocket.play();
-                                        return 'play_sent';
-                                    }
-                                    return 'not_connected';
-                                })();
-                            """.trimIndent()) { playResult ->
-                                Log.i(TAG, "Play command result: $playResult")
-
-                                // Seek to saved position after play starts (only if same track)
-                                val savedPosSec = activity.savedPositionMs / 1000
-                                val savedTitle = activity.savedTrackTitle
-                                if (savedPosSec > 5 && savedTitle.isNotEmpty()) {
-                                    activity.handler.postDelayed({
-                                        // Verify track hasn't changed before seeking
-                                        if (activity.currentTrackTitle == savedTitle) {
-                                            Log.i(TAG, "Same track confirmed, seeking to saved position: ${savedPosSec}s")
-                                            activity.webView.evaluateJavascript("""
-                                                (function() {
-                                                    if (window.MaWebSocket && window.MaWebSocket.isConnected()) {
-                                                        console.log('[AutoResume] Seeking to $savedPosSec seconds');
-                                                        window.MaWebSocket.seek($savedPosSec);
-                                                        return 'seek_sent';
-                                                    }
-                                                    return 'not_connected';
-                                                })();
-                                            """.trimIndent()) { seekResult ->
-                                                Log.i(TAG, "Seek command result: $seekResult")
-                                            }
-                                        } else {
-                                            Log.i(TAG, "Track changed (was: $savedTitle, now: ${activity.currentTrackTitle}) - skipping seek")
-                                        }
-                                    }, 1000)  // Wait 1s for play to start before seeking
-                                }
-                            }
-                        }, 500)  // Wait 500ms after stop before play
-                    }
-                }, 500)  // Small delay to ensure WebSocket is fully ready
-
-                // Set timeout for auto-resume - reload WebView on each retry
-                activity.autoResumeTimeoutRunnable = Runnable {
-                    if (activity.waitingForStreamStart) {
-                        activity.autoResumeRetryCount++
-                        Log.w(TAG, "Auto-resume timed out - no stream/start (attempt ${activity.autoResumeRetryCount}/${activity.MAX_AUTO_RESUME_RETRIES})")
-
-                        if (activity.autoResumeRetryCount < activity.MAX_AUTO_RESUME_RETRIES) {
-                            // Retry by reloading WebView
-                            Log.i(TAG, "Reloading WebView for retry...")
-                            activity.runOnUiThread {
-                                Toast.makeText(activity, "Reloading... (${activity.autoResumeRetryCount}/${activity.MAX_AUTO_RESUME_RETRIES})", Toast.LENGTH_SHORT).show()
-                                activity.pendingAutoPlayAfterReload = true
-                                activity.webView.reload()
-                            }
-                            // Keep waitingForStreamStart and flags active for next attempt
-                            activity.primaryAutoResumeActive = false  // Allow new stabilization after reload
-                        } else {
-                            // All retries failed
-                            Log.w(TAG, "All ${activity.MAX_AUTO_RESUME_RETRIES} retries failed - giving up")
-                            activity.runOnUiThread {
-                                Toast.makeText(activity, "Could not resume playback", Toast.LENGTH_LONG).show()
-                            }
-                            activity.waitingForStreamStart = false
-                            activity.wasPlayingBeforeNetworkLoss = false
-                            activity.autoResumeRetryCount = 0
-                            activity.primaryAutoResumeActive = false
-                        }
-                    }
-                }
-                activity.handler.postDelayed(activity.autoResumeTimeoutRunnable!!, 5000)  // 5 second timeout
-                }
+                activity.networkAutoResume.startOrContinueFromStabilized()
             }
         }
 
@@ -2608,23 +2445,13 @@ class MainActivity : AppCompatActivity(),
 
             Log.i(TAG, "========================================")
             Log.i(TAG, "SendSpin stream/start - AUDIO IS PLAYING!")
-            Log.i(TAG, "waitingForStreamStart: ${activity.waitingForStreamStart}")
+            Log.i(TAG, "waitingForStreamStart: ${activity.networkAutoResume.waitingForStreamStart}")
             Log.i(TAG, "========================================")
 
             activity.runOnUiThread {
-                if (activity.waitingForStreamStart) {
-                    Log.i(TAG, "Auto-resume SUCCESSFUL - stream/start received!")
-                    activity.waitingForStreamStart = false
-                    activity.wasPlayingBeforeNetworkLoss = false
-                    activity.autoResumeRetryCount = 0  // Reset retry counter on success
-                    activity.primaryAutoResumeActive = false  // Allow future fallbacks
-
-                    // Cancel the timeout runnable
-                    activity.autoResumeTimeoutRunnable?.let { activity.handler.removeCallbacks(it) }
-                    activity.autoResumeTimeoutRunnable = null
-
-                    // Brief success toast
-                    Toast.makeText(activity, "Playback resumed", Toast.LENGTH_SHORT).show()
+                val flowId = activity.networkAutoResume.onStreamStart()
+                if (flowId != null) {
+                    Log.i(TAG, "[NET_RETRY][$flowId] stream/start received, auto-resume successful")
                 }
             }
         }
@@ -2640,23 +2467,33 @@ class MainActivity : AppCompatActivity(),
 
         @JavascriptInterface
         fun onSendspinDisconnected() {
+            val activity = activityRef.get() ?: return
             Log.i(TAG, "========================================")
             Log.i(TAG, "SendSpin disconnected")
             Log.i(TAG, "========================================")
-            // AUTO-RESUME DISABLED - starting fresh
+            activity.runOnUiThread {
+                val recoveryRetryArmed = activity.networkAutoResume.onSendspinDisconnected()
+                if (!recoveryRetryArmed) return@runOnUiThread
+
+                Log.i(TAG, "[NET_RETRY] sendspin disconnected during recovery - forcing temporary paused/muted state")
+                activity.isCurrentlyPlaying = false
+                activity.pendingIsPlaying = false
+                activity.lastPauseTime = SystemClock.elapsedRealtime()
+                activity.updatePlaybackState(PlaybackStateCompat.STATE_PAUSED, activity.currentPositionMs)
+                if (activity.audioServiceBound && activity.audioService != null) {
+                    activity.audioService?.updatePlaybackState(false)
+                }
+                activity.setWebViewAudioMuted(true)
+            }
         }
 
         @JavascriptInterface
         fun onPlayFailed() {
             val activity = activityRef.get() ?: return
 
-            Log.w(TAG, "Play failed - auto-resume timed out")
+            Log.w(TAG, "[NET_RETRY][${activity.networkAutoResume.activeFlowId ?: "none"}] play failed - auto-resume timed out")
             activity.runOnUiThread {
-                // JavaScript timed out waiting for track ready signal
-                // Clear flags and notify user
-                activity.waitingForStreamStart = false
-                activity.wasPlayingBeforeNetworkLoss = false
-                Toast.makeText(activity, "Could not auto-resume", Toast.LENGTH_SHORT).show()
+                activity.networkAutoResume.onPlayFailed()
             }
         }
 
@@ -2730,7 +2567,10 @@ class MainActivity : AppCompatActivity(),
         // Note: lifecycleScope automatically cancels when Activity is destroyed
 
         // Remove all pending handler callbacks
+        networkAutoResume.onDestroy()
         handler.removeCallbacksAndMessages(null)
+        pendingBtDisconnectStopRunnable = null
+        pendingBtDisconnectDeviceAddress = null
 
         // Clear artwork reference (GC will handle cleanup)
         currentArtworkBitmap = null

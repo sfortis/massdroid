@@ -37,9 +37,11 @@
     let _stabilizationTimer = null;
     let _isStabilized = false;
     let _serverPlaybackState = null;  // Track what server thinks (from group/update)
+    let _pendingDisconnectNotifyTimer = null;
 
     // Constants
     const STABILIZATION_DELAY_MS = 2500;  // Wait 2.5s after last connect/disconnect
+    const DISCONNECT_NOTIFY_GRACE_MS = 3000;  // Debounce short reconnect flaps
 
     // Expose function to check SendSpin connection status
     window.isSendspinConnected = function() {
@@ -59,6 +61,10 @@
     // Expose function to force close SendSpin WebSocket (for network change cleanup)
     window.closeSendspinSocket = function() {
         console.log('[SS-DEBUG] Force closing SendSpin socket');
+        if (_pendingDisconnectNotifyTimer) {
+            clearTimeout(_pendingDisconnectNotifyTimer);
+            _pendingDisconnectNotifyTimer = null;
+        }
         if (_sendspinSocket) {
             try {
                 _sendspinSocket.close(1000, 'Network lost');
@@ -75,6 +81,29 @@
             _stabilizationTimer = null;
         }
     };
+
+    function clearPendingDisconnectNotify(reason) {
+        if (_pendingDisconnectNotifyTimer) {
+            clearTimeout(_pendingDisconnectNotifyTimer);
+            _pendingDisconnectNotifyTimer = null;
+            console.log('[SS-DEBUG] Cleared pending disconnect notify (' + reason + ')');
+        }
+    }
+
+    function scheduleDisconnectNotify(event) {
+        clearPendingDisconnectNotify('reschedule');
+        _pendingDisconnectNotifyTimer = setTimeout(function() {
+            _pendingDisconnectNotifyTimer = null;
+            if (window.isSendspinConnected()) {
+                console.log('[SS-DEBUG] Suppressing disconnect notify - socket already reconnected');
+                return;
+            }
+            console.log('[SS-DEBUG] Dispatching delayed disconnect notify (' + event + ')');
+            if (window.AndroidMediaSession && window.AndroidMediaSession.onSendspinDisconnected) {
+                window.AndroidMediaSession.onSendspinDisconnected();
+            }
+        }, DISCONNECT_NOTIFY_GRACE_MS);
+    }
 
     // Internal function to handle connection state changes
     function onConnectionStateChange(event, details) {
@@ -172,17 +201,6 @@
             } else {
                 console.warn('[WSInterceptor] MaWebSocket not available!');
             }
-
-            // Also track API WebSocket for stabilization (in case no separate SendSpin WebSocket)
-            ws.addEventListener('open', function() {
-                console.log('[WSInterceptor] API WebSocket opened, starting stabilization timer');
-                onConnectionStateChange('API_OPEN', {});
-            });
-
-            ws.addEventListener('close', function(event) {
-                console.log('[WSInterceptor] API WebSocket closed:', event.code);
-                onConnectionStateChange('API_CLOSE', { code: event.code });
-            });
         }
 
         // ============================================
@@ -197,7 +215,12 @@
             _sendspinSocket = ws;
 
             ws.addEventListener('open', function() {
+                if (ws !== _sendspinSocket) {
+                    console.log('[SS-DEBUG] Ignoring OPEN from stale SendSpin socket');
+                    return;
+                }
                 console.log('[SS-DEBUG] ====== WEBSOCKET OPENED ======');
+                clearPendingDisconnectNotify('sendspin_open');
                 _sendspinConnected = true;
                 _serverPlaybackState = null;  // Reset until we get group/update
                 onConnectionStateChange('OPEN', {});
@@ -207,6 +230,9 @@
             });
 
             ws.addEventListener('message', function(event) {
+                if (ws !== _sendspinSocket) {
+                    return;
+                }
                 try {
                     if (typeof event.data !== 'string') return;
 
@@ -262,6 +288,10 @@
             });
 
             ws.addEventListener('close', function(event) {
+                if (ws !== _sendspinSocket) {
+                    console.log('[SS-DEBUG] Ignoring CLOSE from stale SendSpin socket');
+                    return;
+                }
                 console.log('[SS-DEBUG] ====== WEBSOCKET CLOSED ======');
                 console.log('[SS-DEBUG] code:', event.code, 'reason:', event.reason || 'none');
                 _sendspinConnected = false;
@@ -270,9 +300,7 @@
                 if (window.AndroidMediaSession && window.AndroidMediaSession.logWsDisconnection) {
                     window.AndroidMediaSession.logWsDisconnection('SENDSPIN', event.code, event.reason || '');
                 }
-                if (window.AndroidMediaSession && window.AndroidMediaSession.onSendspinDisconnected) {
-                    window.AndroidMediaSession.onSendspinDisconnected();
-                }
+                scheduleDisconnectNotify('close:' + event.code);
             });
 
             ws.addEventListener('error', function(event) {
@@ -315,26 +343,17 @@
                     const player = msg.data;
                     const phonePlayerId = localStorage.getItem('sendspin_webplayer_id');
 
-                    // Mark as connected when phone player becomes available
+                    // Only report phone player id from API updates.
+                    // Connection/stabilization state must come from SendSpin socket events.
                     if (phonePlayerId && player.player_id === phonePlayerId && player.available === true) {
                         console.log('[WSInterceptor] Phone player available via API: ' + player.player_id);
-                        if (!_sendspinConnected) {
-                            _sendspinConnected = true;
-                            console.log('[WSInterceptor] Setting _sendspinConnected = true (from API)');
-                        }
-                        // Report phone player ID to Android for audio focus guard
                         if (window.AndroidMediaSession && window.AndroidMediaSession.setPhonePlayerId) {
                             window.AndroidMediaSession.setPhonePlayerId(player.player_id);
                         }
                     }
 
-                    // Track when phone player becomes unavailable
                     if (phonePlayerId && player.player_id === phonePlayerId && player.available === false) {
                         console.log('[WSInterceptor] Phone player unavailable via API: ' + player.player_id);
-                        if (_sendspinConnected) {
-                            _sendspinConnected = false;
-                            // Note: Don't call onSendspinDisconnected here - let the WebSocket close handle it
-                        }
                     }
                 }
 

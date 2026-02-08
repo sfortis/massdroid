@@ -16,9 +16,14 @@ import android.util.Log
  * - Triggers stop when a device disconnects while playing
  */
 class BluetoothAutoPlayReceiver(
-    private val onBluetoothAudioConnected: (deviceName: String) -> Unit,
-    private val onBluetoothAudioDisconnected: ((deviceName: String) -> Unit)? = null
+    private val onBluetoothAudioConnected: (device: BluetoothAudioDevice) -> Unit,
+    private val onBluetoothAudioDisconnected: ((device: BluetoothAudioDevice) -> Unit)? = null
 ) : BroadcastReceiver() {
+
+    data class BluetoothAudioDevice(
+        val name: String,
+        val address: String
+    )
 
     companion object {
         private const val TAG = "BluetoothAutoPlay"
@@ -32,9 +37,9 @@ class BluetoothAutoPlayReceiver(
         }
     }
 
-    private var lastConnectedDevice: String? = null
+    private var lastConnectedAddress: String? = null
     private var lastConnectionTime: Long = 0
-    private var lastDisconnectedDevice: String? = null
+    private var lastDisconnectedAddress: String? = null
     private var lastDisconnectionTime: Long = 0
 
     override fun onReceive(context: Context?, intent: Intent?) {
@@ -65,6 +70,11 @@ class BluetoothAutoPlayReceiver(
         } catch (e: SecurityException) {
             "Bluetooth Device"
         }
+        val deviceAddress = try {
+            device.address ?: "unknown"
+        } catch (e: SecurityException) {
+            "unknown"
+        }
 
         // Check if it's actually an audio output device (speaker, headphones, car kit)
         // Skip wearables like smartwatches that have Headset profile for calls but aren't audio outputs
@@ -91,30 +101,30 @@ class BluetoothAutoPlayReceiver(
             BluetoothProfile.STATE_CONNECTED -> {
                 // Debounce: avoid triggering multiple times for same connection
                 val now = System.currentTimeMillis()
-                if (deviceName == lastConnectedDevice && now - lastConnectionTime < 5000) {
-                    Log.d(TAG, "Ignoring duplicate connection event for: $deviceName")
+                if (deviceAddress == lastConnectedAddress && now - lastConnectionTime < 5000) {
+                    Log.d(TAG, "Ignoring duplicate connection event for: $deviceName ($deviceAddress)")
                     return
                 }
 
-                lastConnectedDevice = deviceName
+                lastConnectedAddress = deviceAddress
                 lastConnectionTime = now
 
-                Log.i(TAG, "Bluetooth audio device connected: $deviceName")
-                onBluetoothAudioConnected(deviceName)
+                Log.i(TAG, "Bluetooth audio device connected: $deviceName ($deviceAddress)")
+                onBluetoothAudioConnected(BluetoothAudioDevice(deviceName, deviceAddress))
             }
             BluetoothProfile.STATE_DISCONNECTED -> {
                 // Debounce: avoid triggering multiple times for same disconnection
                 val now = System.currentTimeMillis()
-                if (deviceName == lastDisconnectedDevice && now - lastDisconnectionTime < 5000) {
-                    Log.d(TAG, "Ignoring duplicate disconnection event for: $deviceName")
+                if (deviceAddress == lastDisconnectedAddress && now - lastDisconnectionTime < 5000) {
+                    Log.d(TAG, "Ignoring duplicate disconnection event for: $deviceName ($deviceAddress)")
                     return
                 }
 
-                lastDisconnectedDevice = deviceName
+                lastDisconnectedAddress = deviceAddress
                 lastDisconnectionTime = now
 
-                Log.i(TAG, "Bluetooth audio device disconnected: $deviceName")
-                onBluetoothAudioDisconnected?.invoke(deviceName)
+                Log.i(TAG, "Bluetooth audio device disconnected: $deviceName ($deviceAddress)")
+                onBluetoothAudioDisconnected?.invoke(BluetoothAudioDevice(deviceName, deviceAddress))
             }
         }
     }

@@ -29,12 +29,11 @@
 -keep public class * extends android.webkit.WebViewClient
 -keep public class * extends android.webkit.WebChromeClient
 
-# Strip debug/verbose/info logs in release builds for performance
-# Keeps warning and error logs for production debugging
+# Strip only debug/verbose logs in release builds.
+# Keep info/warn/error so field debugging via adb logcat remains possible.
 -assumenosideeffects class android.util.Log {
     public static int d(...);
     public static int v(...);
-    public static int i(...);
 }
 
 # IMPORTANT: Keep JavascriptInterface inner class completely intact

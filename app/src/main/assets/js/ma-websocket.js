@@ -85,6 +85,28 @@
             }
         },
 
+        close: function(code, reason) {
+            if (!this._ws) {
+                this.log('debug', 'close() called without active socket');
+                return false;
+            }
+
+            try {
+                const closeCode = code || 1000;
+                const closeReason = reason || 'MassDroid reconnect reset';
+                this.log('info', 'Closing MA API socket', {
+                    state: this.getConnectionState(),
+                    code: closeCode,
+                    reason: closeReason
+                });
+                this._ws.close(closeCode, closeReason);
+                return true;
+            } catch (e) {
+                this.log('warn', 'Socket close failed', e.message);
+                return false;
+            }
+        },
+
         // Called by WebSocket interceptor when MA API socket is created
         setSocket: function(ws, url) {
             this._ws = ws;
@@ -280,6 +302,42 @@
                 // Fetch current state of newly selected player
                 this._refreshSelectedPlayerState();
             }
+        },
+
+        /**
+         * Set selected player and keep MA UI + localStorage in sync.
+         * Returns true when player card click dispatch was scheduled.
+         */
+        setSelectedPlayerAndSyncUI: function(playerId, playerName) {
+            this.setSelectedPlayer(playerId, playerName);
+
+            try {
+                localStorage.setItem('massdroid_selected_player_id', playerId);
+                if (playerName) {
+                    localStorage.setItem('massdroid_selected_player_name', playerName);
+                }
+            } catch (e) {
+                this.log('warn', 'Failed to persist selected player in localStorage', e);
+            }
+
+            let clickedCard = false;
+            const card = document.getElementById(playerId);
+            if (card) {
+                try {
+                    card.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true }));
+                    setTimeout(function() {
+                        card.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, cancelable: true }));
+                        card.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+                    }, 50);
+                    clickedCard = true;
+                } catch (e) {
+                    this.log('warn', 'Failed to dispatch player card click', e);
+                }
+            } else {
+                this.log('debug', 'Player card not found for sync', playerId);
+            }
+
+            return clickedCard;
         },
 
         /**
