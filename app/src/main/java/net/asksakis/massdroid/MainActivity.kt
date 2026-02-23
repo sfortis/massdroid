@@ -14,9 +14,6 @@ import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
-import java.io.InputStream
-import java.net.HttpURLConnection
-import java.net.URL
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -34,13 +31,13 @@ import android.view.MenuItem
 import android.view.View
 import android.view.WindowManager
 import android.security.KeyChain
-import android.security.KeyChainAliasCallback
 import android.webkit.ClientCertRequest
 import android.webkit.SslErrorHandler
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.widget.LinearLayout
 import java.lang.ref.WeakReference
 import java.security.PrivateKey
 import java.util.concurrent.atomic.AtomicBoolean
@@ -61,7 +58,6 @@ import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import net.asksakis.massdroid.R
 
 class MainActivity : AppCompatActivity(),
     NavigationView.OnNavigationItemSelectedListener,
@@ -71,6 +67,7 @@ class MainActivity : AppCompatActivity(),
     private lateinit var navigationView: NavigationView
     private lateinit var toolbar: MaterialToolbar
     internal lateinit var webView: WebView
+    private lateinit var webviewWrapper: LinearLayout
     private lateinit var progressBar: LinearProgressIndicator
     internal lateinit var preferencesHelper: PreferencesHelper
 
@@ -654,7 +651,28 @@ class MainActivity : AppCompatActivity(),
         navigationView = findViewById(R.id.navigation_view)
         toolbar = findViewById(R.id.toolbar)
         webView = findViewById(R.id.webview)
+        webviewWrapper = findViewById(R.id.webviewWrapper)
+        applyPaddingForSystemBars(webviewWrapper)
+
         progressBar = findViewById(R.id.progress_bar)
+    }
+
+    private fun applyPaddingForSystemBars(webviewWrapper: LinearLayout) {
+        // Apply window insets to handle navigation bar and status bar padding
+        androidx.core.view.ViewCompat.setOnApplyWindowInsetsListener(webviewWrapper) { view, insets ->
+            val systemBars = insets.getInsets(androidx.core.view.WindowInsetsCompat.Type.systemBars())
+
+            // Add padding to WebView to account for navigation bar and other system UI
+            view.setPadding(
+                systemBars.left,
+                0,  // Top is handled by the AppBar positioning
+                systemBars.right,
+                systemBars.bottom  // This is the navigation bar height
+            )
+
+            // Consume the insets
+            insets
+        }
     }
 
     private fun setupToolbar() {
@@ -2120,23 +2138,23 @@ class MainActivity : AppCompatActivity(),
 
         @JavascriptInterface
         fun logWsConnection(url: String, label: String) {
-            SendSpinDebug.logConnection(url, label)
+//            SendSpinDebug.logConnection(url, label)
         }
 
         @JavascriptInterface
         fun logWsDisconnection(label: String, code: Int, reason: String) {
-            SendSpinDebug.logDisconnection(label, code, reason)
+//            SendSpinDebug.logDisconnection(label, code, reason)
         }
 
         @JavascriptInterface
         fun logWsMessage(source: String, msgType: String, payload: String) {
-            SendSpinDebug.logMessage(source, msgType, payload)
+//            SendSpinDebug.logMessage(source, msgType, payload)
         }
 
         @JavascriptInterface
         fun dumpDebugState() {
             val activity = activityRef.get() ?: return
-            SendSpinDebug.dumpState(activity.webView)
+//            SendSpinDebug.dumpState(activity.webView)
         }
 
         @JavascriptInterface

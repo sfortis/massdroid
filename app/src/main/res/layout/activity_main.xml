@@ -24,8 +24,8 @@
                 android:layout_width="match_parent"
                 android:layout_height="?attr/actionBarSize"
                 android:elevation="0dp"
-                app:title="@string/app_name"
-                app:navigationIcon="@drawable/ic_menu" />
+                app:navigationIcon="@drawable/ic_menu"
+                app:title="@string/app_name" />
 
         </com.google.android.material.appbar.AppBarLayout>
 
@@ -47,15 +47,23 @@
                 app:layout_constraintTop_toTopOf="parent"
                 tools:visibility="visible" />
 
-            <!-- WebView -->
-            <WebView
-                android:id="@+id/webview"
+            <!-- Wrapper Layout for WebView to fix WebView padding bug. -->
+            <LinearLayout
+                android:id="@+id/webviewWrapper"
                 android:layout_width="0dp"
                 android:layout_height="0dp"
                 app:layout_constraintBottom_toBottomOf="parent"
                 app:layout_constraintEnd_toEndOf="parent"
                 app:layout_constraintStart_toStartOf="parent"
-                app:layout_constraintTop_toBottomOf="@id/progress_bar" />
+                app:layout_constraintTop_toBottomOf="@id/progress_bar">
+
+                <!-- WebView -->
+                <WebView
+                    android:id="@+id/webview"
+                    android:layout_width="match_parent"
+                    android:layout_height="match_parent" />
+
+            </LinearLayout>
 
         </androidx.constraintlayout.widget.ConstraintLayout>
 
