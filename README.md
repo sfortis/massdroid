@@ -1,3 +1,7 @@
+> **This project has been discontinued.** MassDroid has been fully rewritten as a native Kotlin/Compose app. Please check out [MassDroid v2](https://github.com/sfortis/massdroid_native) for the latest version with better performance and full native Android integration.
+
+---
+
 <p align="center">
   <img src="docs/massdroid_banner.png" alt="MassDroid" width="600">
 </p>
